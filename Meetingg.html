@@ -493,13 +493,15 @@
             const handleSync = async () => {
                 // If logged in via Magic Link, provider_token might be missing
                 if (!session?.provider_token) {
-                    alert("Sync unavailable: You are logged in via Email.\n\nPlease log out and use 'Sign in with Google' to grant calendar permissions.");
+                    alert("Sync Unavailable: Missing Google Access Token.\n\nExplanation: This usually happens if you refreshed the page after logging in (tokens are not persisted for security).\n\nSolution: Please 'Log Out' and 'Sign in with Google' again immediately before syncing.");
                     return;
                 }
 
                 setIsSyncing(true);
                 try {
-                    const resp = await fetch('https://www.googleapis.com/calendar/v3/calendars/primary/events?maxResults=10&orderBy=startTime&singleEvents=true', {
+                    // Fetch upcoming events from now
+                    const timeMin = new Date().toISOString();
+                    const resp = await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events?maxResults=10&orderBy=startTime&singleEvents=true&timeMin=${timeMin}`, {
                         headers: { Authorization: `Bearer ${session.provider_token}` }
                     });
                     
@@ -514,6 +516,12 @@
 
                     const data = await resp.json();
                     
+                    if (data.items.length === 0) {
+                        alert("Connection successful, but 0 upcoming events found in your primary Google Calendar.");
+                        setIsSyncing(false);
+                        return;
+                    }
+
                     // Transform & Save
                     for (const event of data.items) {
                         const mId = event.id;
@@ -549,7 +557,7 @@
                 } catch (e) {
                     console.error(e);
                     if (e.message === "API_DISABLED") {
-                        alert("Action Required: Google Calendar API is not enabled.\n\nGo to Google Cloud Console > APIs > Enable 'Google Calendar API' for your project.");
+                        alert("Action Required: Google Calendar API is not enabled.\n\n1. Go to Google Cloud Console (console.cloud.google.com)\n2. Select your project\n3. Go to 'APIs & Services' > 'Library'\n4. Search for 'Google Calendar API' and click ENABLE.\n5. Wait 2 minutes and try again.");
                     } else {
                         alert("Sync Error: " + e.message);
                     }
@@ -561,9 +569,6 @@
             const clearDatabase = async () => {
                 if (!confirm("Are you sure? This will delete ALL meetings, tasks, and notes from your database. This cannot be undone.")) return;
                 
-                // Assuming RLS or simple delete all approach. Note: Supabase JS might require an 'eq' or similar filter to delete.
-                // We use neq '0' as a hack to match everything if no specific ID is targetted, or just iterate.
-                // Better approach for this app: just try delete all.
                 try {
                     // Delete all tasks
                     const { error: tErr } = await supabase.from('tasks').delete().neq('id', '0'); 
