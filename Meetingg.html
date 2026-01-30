@@ -110,7 +110,8 @@
                 LogOut: <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4 M16 17l5-5-5-5 M21 12H9" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>,
                 ExternalLink: <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6 M15 3h6v6 M10 14L21 3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>,
                 Google: <React.Fragment><path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/><path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/><path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/><path d="M24 12c0-.82-.07-1.63-.2-2.43H12v4.6h6.77c-.29 1.55-1.16 2.87-2.48 3.75l.02-.02 3.55 2.75c2.08-1.91 3.28-4.73 3.28-8.22z" fill="#4285F4"/></React.Fragment>,
-                Mail: <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z M22 6l-10 7L2 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                Mail: <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z M22 6l-10 7L2 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>,
+                UserPlus: <path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2 M8.5 7a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z M20 8v6M23 11h-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
             };
             return (
                 <svg 
@@ -151,11 +152,20 @@
             done boolean
         );
 
-        create table docs (
-            id text primary key,
-            content text
+        create table team_members (
+            email text primary key,
+            name text,
+            created_at timestamp with time zone default timezone('utc'::text, now()) not null
         );
         `;
+
+        // --- Mock Users for UI (Avatars only) ---
+        const MOCK_DB_USERS = [
+            { id: 'u1', name: 'Alice Chen', role: 'Product Manager', avatar: 'AC', color: 'bg-blue-500' },
+            { id: 'u2', name: 'Bob Smith', role: 'Developer', avatar: 'BS', color: 'bg-green-500' },
+            { id: 'u3', name: 'Charlie Kim', role: 'Designer', avatar: 'CK', color: 'bg-purple-500' },
+            { id: 'u4', name: 'Dana Lee', role: 'VP Engineering', avatar: 'DL', color: 'bg-orange-500' },
+        ];
 
         // --- Components ---
 
@@ -240,7 +250,7 @@
                             {participants.length > 4 && <div className="w-6 h-6 rounded-full bg-gray-200 flex items-center justify-center text-[10px] ring-2 ring-white">+{participants.length - 4}</div>}
                         </div>
                         <div className="flex items-center text-gray-400 text-sm space-x-1 group-hover:text-indigo-500 transition-colors">
-                            <span>Open Notes</span>
+                            <span>Open Tasks</span>
                             <Icon name="ChevronLeft" className="w-4 h-4 rotate-180" />
                         </div>
                     </div>
@@ -263,57 +273,66 @@
             </div>
         );
 
-        const GoogleDocEditor = ({ docContent, title, onSave, onGCalSync, googleDocLink }) => {
-            const [localContent, setLocalContent] = useState(docContent);
-            const timeoutRef = useRef(null);
-            const [syncingToGCal, setSyncingToGCal] = useState(false);
+        const TeamList = ({ teamMembers, onAddMember }) => {
+            const [newEmail, setNewEmail] = useState('');
+            const [newName, setNewName] = useState('');
 
-            useEffect(() => { setLocalContent(docContent || '<p class="text-gray-400 italic">Start typing...</p>'); }, [docContent]);
-            
-            const handleChange = (e) => {
-                const newContent = e.currentTarget.innerHTML;
-                if (timeoutRef.current) clearTimeout(timeoutRef.current);
-                timeoutRef.current = setTimeout(() => { onSave(newContent); }, 1000);
-            };
-
-            const handleGCalSync = async () => {
-                setSyncingToGCal(true);
-                await onGCalSync(localContent);
-                setSyncingToGCal(false);
+            const handleSubmit = (e) => {
+                e.preventDefault();
+                if (!newEmail || !newName) return;
+                onAddMember(newEmail, newName);
+                setNewEmail('');
+                setNewName('');
             };
 
             return (
-                <div className="flex flex-col h-full bg-white border-r border-gray-200 w-full">
-                    <div className="bg-white border-b border-gray-200 p-3 flex items-center justify-between shrink-0">
-                        <div className="flex items-center space-x-4">
-                            <div className="bg-blue-600 p-1.5 rounded text-white"><Icon name="FileText" className="w-5 h-5" /></div>
-                            <h3 className="text-sm font-medium text-gray-800 leading-tight truncate max-w-[200px] sm:max-w-md">{title}</h3>
-                        </div>
-                        <div className="flex items-center space-x-2">
-                             <button 
-                                onClick={handleGCalSync} 
-                                disabled={syncingToGCal}
-                                className="text-xs bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 px-3 py-1.5 rounded-md flex items-center space-x-1"
-                                title="Update Google Calendar Description with these notes"
-                             >
-                                <Icon name="RefreshCw" className={`w-3 h-3 ${syncingToGCal ? 'animate-spin' : ''}`} />
-                                <span>{syncingToGCal ? 'Syncing...' : 'Sync to GCal Description'}</span>
-                             </button>
-                        </div>
+                <div className="space-y-6">
+                    <div className="bg-white p-6 rounded-xl border border-gray-200">
+                        <h3 className="text-lg font-bold text-gray-900 mb-4 flex items-center">
+                            <Icon name="UserPlus" className="w-5 h-5 mr-2 text-indigo-600" />
+                            Add Team Member
+                        </h3>
+                        <form onSubmit={handleSubmit} className="flex flex-col sm:flex-row gap-4">
+                            <input
+                                type="text"
+                                placeholder="Name"
+                                value={newName}
+                                onChange={(e) => setNewName(e.target.value)}
+                                className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none"
+                            />
+                            <input
+                                type="email"
+                                placeholder="Email (@tempo.fit)"
+                                value={newEmail}
+                                onChange={(e) => setNewEmail(e.target.value)}
+                                className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none"
+                            />
+                            <button type="submit" className="bg-indigo-600 text-white px-6 py-2 rounded-lg hover:bg-indigo-700 transition-colors font-medium">
+                                Add
+                            </button>
+                        </form>
                     </div>
-                    
-                    {googleDocLink && (
-                        <div className="bg-blue-50 border-b border-blue-100 p-2 flex justify-center shrink-0">
-                            <a href={googleDocLink} target="_blank" className="text-sm text-blue-700 hover:underline flex items-center font-medium">
-                                <Icon name="ExternalLink" className="w-4 h-4 mr-2" />
-                                Open Linked Google Doc
-                            </a>
-                        </div>
-                    )}
 
-                    <div className="flex-1 overflow-y-auto w-full bg-white">
-                        <div className="min-h-full p-8 outline-none w-full max-w-none">
-                            <div className="prose max-w-none focus:outline-none w-full" contentEditable suppressContentEditableWarning dangerouslySetInnerHTML={{ __html: localContent }} onInput={handleChange} />
+                    <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+                        <div className="p-4 border-b border-gray-100 bg-gray-50">
+                            <h3 className="font-bold text-gray-700">Team Directory</h3>
+                        </div>
+                        <div className="divide-y divide-gray-100">
+                            {teamMembers.length === 0 ? (
+                                <div className="p-8 text-center text-gray-500 italic">No team members added yet.</div>
+                            ) : (
+                                teamMembers.map(member => (
+                                    <div key={member.email} className="p-4 flex items-center justify-between hover:bg-gray-50">
+                                        <div className="flex items-center space-x-3">
+                                            <UserAvatar user={member} />
+                                            <div>
+                                                <p className="font-medium text-gray-900">{member.name}</p>
+                                                <p className="text-sm text-gray-500">{member.email}</p>
+                                            </div>
+                                        </div>
+                                    </div>
+                                ))
+                            )}
                         </div>
                     </div>
                 </div>
@@ -337,34 +356,58 @@
             const completedTasks = tasks.filter(t => t.done);
 
             return (
-                <div className="h-full flex flex-col bg-white border-l border-gray-200 w-80 shrink-0">
-                    <div className="p-4 border-b border-gray-200 bg-gray-50">
-                        <h2 className="font-semibold text-gray-800 flex items-center">
-                            <Icon name="CheckSquare" className="w-4 h-4 mr-2 text-indigo-600" />
+                <div className="flex flex-col h-full bg-white w-full">
+                    <div className="p-6 border-b border-gray-200 bg-white">
+                        <h2 className="text-xl font-bold text-gray-800 flex items-center">
+                            <Icon name="CheckSquare" className="w-6 h-6 mr-3 text-indigo-600" />
                             Action Items
                         </h2>
+                        
+                        <form onSubmit={handleAdd} className="mt-4 flex gap-2">
+                            <input 
+                                type="text" 
+                                placeholder="New task description..." 
+                                className="flex-1 text-sm border-gray-300 rounded-md shadow-sm focus:border-indigo-500 focus:ring-indigo-500 border p-2" 
+                                value={newTaskText} 
+                                onChange={(e) => setNewTaskText(e.target.value)} 
+                            />
+                            <div className="w-48">
+                                <select 
+                                    className="w-full text-sm border-gray-300 rounded-md shadow-sm border p-2 bg-white" 
+                                    value={assignee} 
+                                    onChange={(e) => setAssignee(e.target.value)}
+                                >
+                                    <option value={currentUserId}>Me</option>
+                                    {attendees.map(u => (
+                                        <option key={u.email || u.id} value={u.email || u.id}>{u.name || u.email}</option>
+                                    ))}
+                                </select>
+                            </div>
+                            <button type="submit" disabled={!newTaskText.trim()} className="bg-indigo-600 text-white p-2 rounded-md hover:bg-indigo-700 disabled:opacity-50">
+                                <Icon name="Plus" className="w-5 h-5" />
+                            </button>
+                        </form>
                     </div>
-                    <div className="flex-1 overflow-y-auto p-4 space-y-6">
+
+                    <div className="flex-1 overflow-y-auto p-6 space-y-6 bg-gray-50">
                         <div className="space-y-3">
-                            <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">To Do</h3>
+                            <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">To Do</h3>
                             {activeTasks.length === 0 && <p className="text-sm text-gray-400 italic">No open tasks.</p>}
                             {activeTasks.map(task => {
                                 // Find name
-                                const user = attendees.find(u => u.id === task.assignee) || { name: 'Unknown' };
+                                const user = attendees.find(u => (u.email === task.assignee || u.id === task.assignee)) || { name: 'Unknown' };
                                 const displayName = user.name || user.email || 'Unknown';
                                 return (
-                                    <div key={task.id} className="group bg-white border border-gray-200 rounded-lg p-3 hover:shadow-sm transition-all">
-                                        <div className="flex items-start space-x-3">
-                                            <button onClick={() => onToggle(task.id, !task.done)} className="mt-0.5 text-gray-400 hover:text-green-600 transition-colors">
-                                                <Icon name="Circle" className="w-5 h-5" />
-                                            </button>
-                                            <div className="flex-1">
-                                                <p className="text-sm text-gray-800">{task.text}</p>
-                                                <div className="mt-2 flex items-center justify-between">
-                                                    <div className="flex items-center space-x-1.5 bg-gray-100 px-2 py-0.5 rounded-full" title={displayName}>
-                                                        <UserAvatar user={user} size="xs" />
-                                                        <span className="text-xs text-gray-600 truncate max-w-[80px]">{displayName.split(' ')[0]}</span>
-                                                    </div>
+                                    <div key={task.id} className="group bg-white border border-gray-200 rounded-lg p-4 hover:shadow-md transition-all flex items-start space-x-3">
+                                        <button onClick={() => onToggle(task.id, !task.done)} className="mt-0.5 text-gray-400 hover:text-green-600 transition-colors">
+                                            <Icon name="Circle" className="w-6 h-6" />
+                                        </button>
+                                        <div className="flex-1">
+                                            <p className="text-base text-gray-800 font-medium">{task.text}</p>
+                                            <div className="mt-2 flex items-center justify-between">
+                                                <div className="flex items-center space-x-2 bg-gray-100 px-3 py-1 rounded-full" title={displayName}>
+                                                    <UserAvatar user={user} size="xs" />
+                                                    <span className="text-xs text-gray-600 font-medium">{displayName}</span>
                                                 </div>
                                             </div>
                                         </div>
@@ -373,10 +416,10 @@
                             })}
                         </div>
                         {completedTasks.length > 0 && (
-                            <div className="space-y-3 pt-4 border-t border-gray-100">
-                                <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Completed</h3>
+                            <div className="space-y-3 pt-6 border-t border-gray-200">
+                                <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">Completed</h3>
                                 {completedTasks.map(task => (
-                                    <div key={task.id} className="flex items-center space-x-3 p-2 opacity-60">
+                                    <div key={task.id} className="flex items-center space-x-3 p-3 opacity-60 bg-white rounded-lg border border-gray-100">
                                         <button onClick={() => onToggle(task.id, !task.done)} className="text-green-600">
                                             <Icon name="CheckCircle2" className="w-5 h-5" />
                                         </button>
@@ -385,22 +428,6 @@
                                 ))}
                             </div>
                         )}
-                    </div>
-                    <div className="p-4 border-t border-gray-200 bg-gray-50">
-                        <form onSubmit={handleAdd}>
-                            <input type="text" placeholder="New task..." className="w-full text-sm border-gray-300 rounded-md shadow-sm focus:border-indigo-500 focus:ring-indigo-500 mb-2 p-2 border" value={newTaskText} onChange={(e) => setNewTaskText(e.target.value)} />
-                            <div className="flex items-center space-x-2">
-                                <select className="flex-1 text-sm border-gray-300 rounded-md shadow-sm border p-1.5" value={assignee} onChange={(e) => setAssignee(e.target.value)}>
-                                    <option value={currentUserId}>Me</option>
-                                    {attendees.map(u => (
-                                        <option key={u.email || u.id} value={u.email || u.id}>{u.name || u.email}</option>
-                                    ))}
-                                </select>
-                                <button type="submit" disabled={!newTaskText.trim()} className="bg-indigo-600 text-white p-1.5 rounded-md hover:bg-indigo-700 disabled:opacity-50">
-                                    <Icon name="Plus" className="w-5 h-5" />
-                                </button>
-                            </div>
-                        </form>
                     </div>
                 </div>
             );
@@ -424,7 +451,7 @@
                             <Icon name="Calendar" className="w-8 h-8 text-indigo-600" />
                         </div>
                         <h1 className="text-2xl font-bold text-gray-900 mb-2">Welcome to MeetingMate</h1>
-                        <p className="text-gray-500 mb-8">Collaborate on meeting notes, track tasks, and sync with your team.</p>
+                        <p className="text-gray-500 mb-8">Collaborate on meeting tasks and sync with your team.</p>
                         
                         <button onClick={onLogin} className="w-full flex items-center justify-center space-x-3 bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 font-medium py-3 px-4 rounded-lg transition-colors mb-6">
                             <Icon name="Google" className="w-5 h-5" />
@@ -480,7 +507,7 @@
             const [session, setSession] = useState(null);
             const [currentUser, setCurrentUser] = useState(null);
             const [view, setView] = useState('dashboard');
-            const [dashboardViewMode, setDashboardViewMode] = useState('meetings'); // 'meetings' | 'tasks'
+            const [dashboardViewMode, setDashboardViewMode] = useState('meetings'); // 'meetings' | 'tasks' | 'team'
             const [selectedDate, setSelectedDate] = useState(getTodayISO());
             const [selectedMeetingId, setSelectedMeetingId] = useState(null);
             const [syncRange, setSyncRange] = useState('upcoming'); // 'upcoming' | 'past_month'
@@ -488,9 +515,9 @@
             // Data State
             const [meetings, setMeetings] = useState([]);
             const [tasks, setTasks] = useState([]);
-            const [docs, setDocs] = useState({});
+            const [teamMembers, setTeamMembers] = useState([]);
             
-            // Collated colleagues from all meetings
+            // Collated colleagues from all meetings + manual team members
             const [colleagues, setColleagues] = useState([]);
 
             // Status State
@@ -533,7 +560,7 @@
                         setCurrentUser(null);
                         setMeetings([]);
                         setTasks([]);
-                        setDocs({});
+                        setTeamMembers([]);
                         setView('dashboard');
                     }
                 });
@@ -571,7 +598,7 @@
                     setCurrentUser(null);
                     setMeetings([]);
                     setTasks([]);
-                    setDocs({});
+                    setTeamMembers([]);
                     setView('dashboard');
                     setSelectedMeetingId(null);
                 }
@@ -587,22 +614,31 @@
 
                     const { data: m, error: mErr } = await supabase.from('meetings').select('*');
                     const { data: t, error: tErr } = await supabase.from('tasks').select('*');
-                    const { data: d, error: dErr } = await supabase.from('docs').select('*');
+                    const { data: tm, error: tmErr } = await supabase.from('team_members').select('*');
 
-                    if (mErr || tErr || dErr) throw new Error("Fetch failed");
+                    if (mErr || tErr) throw new Error("Fetch failed");
 
                     // Parse meetings with rich participants
                     const parsedM = m.map(x => ({ ...x, participants: typeof x.participants === 'string' ? JSON.parse(x.participants) : x.participants || [] }));
                     const parsedT = t.map(x => ({ ...x, meetingId: x.meeting_id }));
-                    const docsMap = {}; d.forEach(x => docsMap[x.id] = x.content);
+                    
+                    const parsedTeam = tm || [];
+                    setTeamMembers(parsedTeam);
 
                     // Extract unique colleagues from all meetings
                     const uniqueColleaguesMap = new Map();
+                    
+                    // Add manual team members first
+                    parsedTeam.forEach(member => {
+                        uniqueColleaguesMap.set(member.email, member);
+                    });
+
+                    // Add meeting participants
                     parsedM.forEach(meet => {
                         if (Array.isArray(meet.participants)) {
                             meet.participants.forEach(p => {
                                 const key = p.email || p.id || p.name;
-                                if (!uniqueColleaguesMap.has(key)) {
+                                if (key && !uniqueColleaguesMap.has(key)) {
                                     uniqueColleaguesMap.set(key, p);
                                 }
                             });
@@ -612,7 +648,6 @@
 
                     setMeetings(parsedM);
                     setTasks(parsedT);
-                    setDocs(docsMap);
                     setDbStatus(parsedM.length ? 'connected' : 'empty');
 
                 } catch (err) {
@@ -720,10 +755,7 @@
                             google_doc_link: gDocLink
                         });
                         
-                        await supabase.from('docs').upsert({ 
-                            id: docId, 
-                            content: `<h1>${event.summary}</h1><p>${description || 'No description provided.'}</p>` 
-                        }, { onConflict: 'id', ignoreDuplicates: true });
+                        // Removed docs upsert as requested (no notes)
                     }
                     
                     await fetchData();
@@ -741,46 +773,24 @@
                 }
             };
 
-            const handleGCalDescriptionSync = async (meetingId, content) => {
-                if (!session?.provider_token) {
-                    alert("Cannot sync to Google Calendar: Missing access token. Please re-login via Google.");
+            const handleAddTeamMember = async (email, name) => {
+                if (!email.endsWith('@tempo.fit')) {
+                    alert('Invalid email domain. Must be @tempo.fit');
                     return;
                 }
                 
-                const meeting = meetings.find(m => m.id === meetingId);
-                if (!meeting || !meeting.google_calendar_id) return;
-
-                // Simple HTML to Text conversion for description
-                const tempDiv = document.createElement('div');
-                tempDiv.innerHTML = content;
-                const textDescription = tempDiv.innerText;
-
                 try {
-                    const resp = await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events/${meeting.google_calendar_id}`, {
-                        method: 'PATCH',
-                        headers: {
-                            Authorization: `Bearer ${session.provider_token}`,
-                            'Content-Type': 'application/json'
-                        },
-                        body: JSON.stringify({
-                            description: textDescription
-                        })
+                    const { error } = await supabase.from('team_members').insert({
+                        email, 
+                        name
                     });
-
-                    if (!resp.ok) throw new Error("Google API Error");
-                    alert("Success! Notes synced to Google Calendar event description.");
+                    
+                    if (error) throw error;
+                    
+                    await fetchData(); // Refresh list
+                    alert(`Added ${name} to team.`);
                 } catch(e) {
-                    alert("Failed to sync description to Google Calendar.");
-                    console.error(e);
-                }
-            };
-
-            const handleDocSave = async (content) => {
-                if(!selectedMeetingId) return;
-                const m = meetings.find(x => x.id === selectedMeetingId);
-                setDocs(prev => ({ ...prev, [m.docId]: content }));
-                if (dbStatus === 'connected' || dbStatus === 'empty') {
-                    await supabase.from('docs').upsert({ id: m.docId, content });
+                    alert("Error adding member: " + e.message);
                 }
             };
 
@@ -805,9 +815,9 @@
             // Combine meeting participants and known colleagues for robust assignment
             const allPossibleAssignees = useMemo(() => {
                 const m = meetings.find(x => x.id === selectedMeetingId);
-                if (!m) return [];
+                let meetingParts = [];
+                if (m) meetingParts = m.participants || [];
                 
-                const meetingParts = m.participants || [];
                 const combined = [...meetingParts, ...colleagues];
                 // De-dupe by email/id
                 const unique = new Map();
@@ -844,10 +854,10 @@
                                 <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 gap-4">
                                     <div>
                                         <h2 className="text-2xl font-bold text-gray-900">
-                                            {dashboardViewMode === 'meetings' ? 'My Meetings' : 'My Tasks'}
+                                            {dashboardViewMode === 'meetings' ? 'My Meetings' : (dashboardViewMode === 'tasks' ? 'My Tasks' : 'Team')}
                                         </h2>
                                         <p className="text-gray-500 text-sm mt-1">
-                                            {currentUser.name} • {new Date(selectedDate).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })}
+                                            {currentUser.name} {dashboardViewMode === 'meetings' && `• ${new Date(selectedDate).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })}`}
                                         </p>
                                     </div>
                                     <div className="flex flex-col sm:flex-row items-center gap-3 w-full sm:w-auto">
@@ -864,17 +874,25 @@
                                              >
                                                 Tasks
                                              </button>
+                                             <button
+                                                onClick={() => setDashboardViewMode('team')}
+                                                className={`flex-1 sm:flex-none px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${dashboardViewMode === 'team' ? 'bg-indigo-100 text-indigo-700' : 'text-gray-600 hover:bg-gray-50'}`}
+                                             >
+                                                Team
+                                             </button>
                                         </div>
                                         
-                                        <div className="relative w-full sm:w-auto">
-                                            <input
-                                                type="date"
-                                                value={selectedDate}
-                                                onChange={(e) => setSelectedDate(e.target.value)}
-                                                className="w-full pl-10 pr-4 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 shadow-sm"
-                                            />
-                                            <Icon name="Calendar" className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-4 h-4 pointer-events-none" />
-                                        </div>
+                                        {dashboardViewMode === 'meetings' && (
+                                            <div className="relative w-full sm:w-auto">
+                                                <input
+                                                    type="date"
+                                                    value={selectedDate}
+                                                    onChange={(e) => setSelectedDate(e.target.value)}
+                                                    className="w-full pl-10 pr-4 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 shadow-sm"
+                                                />
+                                                <Icon name="Calendar" className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-4 h-4 pointer-events-none" />
+                                            </div>
+                                        )}
                                     </div>
                                 </div>
                                 
@@ -900,7 +918,7 @@
                                             </div>
                                         )}
                                     </>
-                                ) : (
+                                ) : dashboardViewMode === 'tasks' ? (
                                     /* Tasks View */
                                     <div className="space-y-3">
                                         {myTasks.length > 0 ? (
@@ -914,6 +932,9 @@
                                             </div>
                                         )}
                                     </div>
+                                ) : (
+                                    /* Team View */
+                                    <TeamList teamMembers={teamMembers} onAddMember={handleAddTeamMember} />
                                 )}
                             </div>
                         </main>
@@ -935,30 +956,23 @@
                         title={m.title}
                     />
                     <div className="flex-1 flex overflow-hidden">
-                        <div className="flex-1 bg-gray-100 flex flex-col">
-                            <GoogleDocEditor 
-                                title={m.title} 
-                                docContent={docs[m.docId]} 
-                                onSave={handleDocSave}
-                                googleDocLink={m.google_doc_link}
-                                onGCalSync={(content) => handleGCalDescriptionSync(m.id, content)}
+                        {/* FULL WIDTH TASK MANAGER - NO NOTES */}
+                        <div className="flex-1 w-full bg-white h-full">
+                            <TaskManager 
+                                tasks={tasks.filter(t => t.meetingId === m.id)}
+                                attendees={allPossibleAssignees}
+                                currentUserId={currentUser ? currentUser.id : null}
+                                onToggle={handleTaskToggle}
+                                onAdd={(mId, text, assignee) => {
+                                    const newId = `t_${Date.now()}`;
+                                    setTasks(prev => [...prev, { id: newId, meetingId: mId, text, assignee, done: false }]);
+                                    if (dbStatus === 'connected') {
+                                        supabase.from('tasks').insert({ id: newId, meeting_id: mId, text, assignee, done: false }).then();
+                                    }
+                                }}
+                                meetingId={m.id}
                             />
                         </div>
-                        {/* ENABLED TASK MANAGER */}
-                        <TaskManager 
-                            tasks={tasks.filter(t => t.meetingId === m.id)}
-                            attendees={allPossibleAssignees}
-                            currentUserId={currentUser ? currentUser.id : null}
-                            onToggle={handleTaskToggle}
-                            onAdd={(mId, text, assignee) => {
-                                const newId = `t_${Date.now()}`;
-                                setTasks(prev => [...prev, { id: newId, meetingId: mId, text, assignee, done: false }]);
-                                if (dbStatus === 'connected') {
-                                    supabase.from('tasks').insert({ id: newId, meeting_id: mId, text, assignee, done: false }).then();
-                                }
-                            }}
-                            meetingId={m.id}
-                        />
                     </div>
                 </div>
             );
