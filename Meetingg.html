@@ -447,7 +447,7 @@ END $$;
             );
         };
 
-        const TeamList = ({ teamMembers, onAddMember, onUpdateMember }) => {
+        const TeamList = ({ teamMembers, onAddMember, onUpdateMember, colleagues }) => {
             const [newEmail, setNewEmail] = useState('');
             const [newName, setNewName] = useState('');
             const [newTeam, setNewTeam] = useState(DEPARTMENTS[0]);
@@ -460,6 +460,21 @@ END $$;
                 setNewEmail('');
                 setNewName('');
             };
+
+            // Identify unassigned members from colleagues who are not in teamMembers or have no team set
+            const unassigned = useMemo(() => {
+                return colleagues.filter(c => {
+                    const existing = teamMembers.find(t => t.email === (c.email || c.id));
+                    return !existing || !existing.team || !DEPARTMENTS.includes(existing.team);
+                });
+            }, [colleagues, teamMembers]);
+
+            // For unassigned, we prefer using the teamMembers record if it exists (so we have up-to-date name/role if partially set)
+            // or the colleague record otherwise.
+            const displayUnassigned = unassigned.map(c => {
+                const existing = teamMembers.find(t => t.email === (c.email || c.id));
+                return existing || c;
+            });
 
             return (
                 <div className="space-y-6">
@@ -503,6 +518,49 @@ END $$;
                             </button>
                         </form>
                     </div>
+
+                    {/* Unassigned / Discovered Section */}
+                    {displayUnassigned.length > 0 && (
+                        <div className="bg-white rounded-xl border border-gray-200 overflow-hidden shadow-sm">
+                            <div className="p-4 bg-gray-50 border-b border-gray-200">
+                                <h3 className="font-bold text-gray-800">Unassigned / Discovered</h3>
+                            </div>
+                            <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+                                {displayUnassigned.map(m => {
+                                    const email = m.email || m.id;
+                                    return (
+                                        <div key={email} className="flex flex-col sm:flex-row items-center gap-2 p-2 hover:bg-gray-50 rounded-lg transition-colors border border-gray-100">
+                                            <div className="flex items-center space-x-2 flex-1 w-full">
+                                                <UserAvatar user={m} size="xs" />
+                                                <div className="truncate">
+                                                    <p className="text-sm text-gray-800 truncate">{m.name || email}</p>
+                                                    <p className="text-[10px] text-gray-500 truncate">{email}</p>
+                                                </div>
+                                            </div>
+                                            <div className="flex gap-1 w-full sm:w-auto">
+                                                <select 
+                                                    value={m.team || ''}
+                                                    onChange={(e) => onUpdateMember(email, { team: e.target.value })}
+                                                    className="text-[10px] border-gray-200 rounded p-1 bg-white focus:outline-none w-1/2 sm:w-auto min-w-[80px]"
+                                                >
+                                                    <option value="">Select Team</option>
+                                                    {DEPARTMENTS.map(d => <option key={d} value={d}>{d}</option>)}
+                                                </select>
+                                                <select 
+                                                    value={m.role || 'Member'}
+                                                    onChange={(e) => onUpdateMember(email, { role: e.target.value })}
+                                                    className="text-[10px] border-gray-200 rounded p-1 bg-white focus:outline-none w-1/2 sm:w-auto"
+                                                >
+                                                    <option value="Member">Member</option>
+                                                    <option value="Owner">Owner</option>
+                                                </select>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                    )}
 
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                         {DEPARTMENTS.map(team => {
@@ -1057,12 +1115,23 @@ END $$;
             };
             
             const handleUpdateTeamMember = async (email, updates) => {
-                // Optimistic Update
+                // 1. Update Colleagues State (Immediate UI)
+                setColleagues(prev => prev.map(c => 
+                    (c.email === email || c.id === email) ? { ...c, ...updates } : c
+                ));
                 setTeamMembers(prev => prev.map(m => m.email === email ? { ...m, ...updates } : m));
-                
+
+                // 2. Prepare data for DB
+                const user = colleagues.find(c => c.email === email || c.id === email);
+                const name = user ? (user.name || user.email) : email;
+
                 if (dbStatus === 'connected') {
                     try {
-                        const { error } = await supabase.from('team_members').update(updates).eq('email', email);
+                        const { error } = await supabase.from('team_members').upsert({
+                            email,
+                            name,
+                            ...updates
+                        });
                         if (error) throw error;
                     } catch (e) {
                         console.error("Error updating team member:", e);
@@ -1209,8 +1278,8 @@ END $$;
                                                         key={t.id} 
                                                         task={t} 
                                                         meetingTitle={mtg ? mtg.title : 'Unknown Meeting'} 
-                                                        onStatusChange={(id, val) => handleUpdateTask(id, { status: val, done: val === 'completed' })}
-                                                        onObstacleChange={(id, val) => handleUpdateTask(id, { obstacles: val })}
+                                                        onStatusChange={handleUpdateTask} 
+                                                        onObstacleChange={handleUpdateTask}
                                                     />
                                                 );
                                             })
@@ -1223,6 +1292,7 @@ END $$;
                                 ) : dashboardViewMode === 'team' ? (
                                     <TeamList 
                                         teamMembers={teamMembers} 
+                                        colleagues={colleagues}
                                         onAddMember={handleAddTeamMember} 
                                         onUpdateMember={handleUpdateTeamMember}
                                     />
