@@ -42,9 +42,6 @@
         body { font-family: 'Inter', sans-serif; }
         .no-scrollbar::-webkit-scrollbar { display: none; }
         .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
-        .prose h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 1rem; color: #111827; }
-        .prose p { margin-bottom: 0.75rem; line-height: 1.6; color: #374151; }
-        .prose:focus { outline: none; }
     </style>
 </head>
 <body class="bg-gray-50 text-gray-900 h-screen overflow-hidden">
@@ -1212,8 +1209,8 @@ END $$;
                                                         key={t.id} 
                                                         task={t} 
                                                         meetingTitle={mtg ? mtg.title : 'Unknown Meeting'} 
-                                                        onStatusChange={handleUpdateTask} 
-                                                        onObstacleChange={handleUpdateTask}
+                                                        onStatusChange={(id, val) => handleUpdateTask(id, { status: val, done: val === 'completed' })}
+                                                        onObstacleChange={(id, val) => handleUpdateTask(id, { obstacles: val })}
                                                     />
                                                 );
                                             })
