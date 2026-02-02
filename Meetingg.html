@@ -109,7 +109,7 @@
                 Trash2: <path d="M3 6h18 M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6 M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2 M10 11v6 M14 11v6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>,
                 AlertCircle: <path d="M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20Zm-1-9h2m-2 4h2" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>,
                 CheckSquare: <path d="m9 11 3 3L22 4 M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>,
-                FileText: <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z M14 2v6h6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>,
+                FileText: <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6z M14 3v5h5 M16 13H8 M16 17H8 M10 9H8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>,
                 Bold: <path d="M14 12a4 4 0 0 0 0-8H6v8 M15 20a4 4 0 0 0 0-8H6v8Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>,
                 Italic: <path d="M19 4h-9M14 20H5M15 4L9 20" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>,
                 Underline: <path d="M6 4v6a6 6 0 0 0 12 0V4 M4 20h16" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>,
@@ -1326,41 +1326,40 @@ END $$;
                     });
                 });
 
+                // Filter by Selected Date
+                const dateFiltered = userMeetings.filter(m => m.date === selectedDate);
+
                 // Sort Descending (Newest first)
-                return userMeetings.sort((a, b) => {
-                    // Combine date and time for accurate sort
+                return dateFiltered.sort((a, b) => {
                     const dateA = new Date(a.date + ' ' + (a.time || '00:00'));
                     const dateB = new Date(b.date + ' ' + (b.time || '00:00'));
                     return dateB - dateA;
                 });
-            }, [meetings, currentUser]);
+            }, [meetings, currentUser, selectedDate]);
 
             // --- FILTER TASKS LOGIC ---
             const filteredTasks = useMemo(() => {
                 // First filter by SCOPE (Me vs My Team)
                 let scopeFiltered = [];
-                if (taskScope === 'me') {
+                if (taskScope === 'me' || currentUser?.system_role !== 'admin') { // Force 'me' for regular users
                     scopeFiltered = tasks.filter(t => 
                         t.assignee === currentUser?.id || 
-                        t.assignee === currentUser?.email || 
-                        t.assignee === currentUser?.name
+                        t.assignee === currentUser?.email || // Case-insensitive check handled by normalized data or strict check here
+                        (t.assignee && t.assignee.toLowerCase() === (currentUser?.email || '').toLowerCase())
                     ); 
                 } else if (taskScope === 'team') {
                     // Find teams user manages
                     const myManagedTeams = [];
                     const userEmail = currentUser?.email || session?.user?.email;
                     
-                    // Find user in team_members to check roles
                     const meInTeam = teamMembers.find(tm => tm.email === userEmail);
                     
                     if (meInTeam) {
-                        // Direct ownership of a team
                         const teamsOwned = teamMembers
                             .filter(tm => tm.email === userEmail && tm.role === 'Owner')
                             .map(tm => tm.team);
                         myManagedTeams.push(...teamsOwned);
                         
-                        // Delegated management (Managers team member managing other teams)
                         if (meInTeam.team === 'Managers' && meInTeam.managed_teams) {
                             myManagedTeams.push(...meInTeam.managed_teams);
                         }
@@ -1383,11 +1382,9 @@ END $$;
 
             // Combine participants for robust assignment
             const allPossibleAssignees = useMemo(() => {
-                // Combine all team members + all meeting participants into one unique list
                 const combined = [...teamMembers, ...colleagues];
                 const unique = new Map();
                 
-                // Add current user first
                 if (currentUser) unique.set(currentUser.id, currentUser);
 
                 combined.forEach(u => {
@@ -1424,7 +1421,7 @@ END $$;
                                             {dashboardViewMode === 'meetings' ? 'My Meetings' : (dashboardViewMode === 'tasks' ? 'My Tasks' : (dashboardViewMode === 'team' ? 'Team' : 'Reports'))}
                                         </h2>
                                         <p className="text-gray-500 text-sm mt-1">
-                                            {currentUser.name}
+                                            {currentUser.name} {dashboardViewMode === 'meetings' && `• ${new Date(selectedDate).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })}`}
                                         </p>
                                     </div>
                                     <div className="flex flex-col sm:flex-row items-center gap-3 w-full sm:w-auto">
@@ -1439,14 +1436,28 @@ END $$;
                                              )}
                                         </div>
                                         
-                                        {/* REMOVED DATE PICKER - Use list view instead */}
+                                        {/* Date Picker - Only for Meetings View */}
+                                        {dashboardViewMode === 'meetings' && (
+                                            <div className="relative w-full sm:w-auto">
+                                                <input
+                                                    type="date"
+                                                    value={selectedDate}
+                                                    onChange={(e) => setSelectedDate(e.target.value)}
+                                                    className="w-full pl-10 pr-4 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 shadow-sm"
+                                                />
+                                                <Icon name="Calendar" className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-4 h-4 pointer-events-none" />
+                                            </div>
+                                        )}
 
                                         {dashboardViewMode === 'tasks' && (
                                             <div className="flex gap-2 w-full sm:w-auto">
-                                                <div className="flex items-center bg-white border border-gray-200 rounded-lg p-0.5">
-                                                    <button onClick={() => setTaskScope('me')} className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${taskScope === 'me' ? 'bg-gray-100 text-gray-900' : 'text-gray-500'}`}>Me</button>
-                                                    <button onClick={() => setTaskScope('team')} className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${taskScope === 'team' ? 'bg-gray-100 text-gray-900' : 'text-gray-500'}`}>My Team</button>
-                                                </div>
+                                                {/* Only show scope toggle if admin/manager */}
+                                                {currentUser.system_role === 'admin' && (
+                                                    <div className="flex items-center bg-white border border-gray-200 rounded-lg p-0.5">
+                                                        <button onClick={() => setTaskScope('me')} className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${taskScope === 'me' ? 'bg-gray-100 text-gray-900' : 'text-gray-500'}`}>Me</button>
+                                                        <button onClick={() => setTaskScope('team')} className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${taskScope === 'team' ? 'bg-gray-100 text-gray-900' : 'text-gray-500'}`}>My Team</button>
+                                                    </div>
+                                                )}
                                                 <select
                                                     value={taskFilter}
                                                     onChange={(e) => setTaskFilter(e.target.value)}
@@ -1479,7 +1490,7 @@ END $$;
                                             </div>
                                         ) : (
                                             <div className="text-center py-20 bg-white rounded-xl border border-dashed">
-                                                <p className="text-gray-500">No meetings found.</p>
+                                                <p className="text-gray-500">No meetings found for {selectedDate}.</p>
                                                 {dbStatus === 'empty' && <p className="text-sm text-indigo-500 mt-2">Click "Sync" to load from Google.</p>}
                                             </div>
                                         )}
