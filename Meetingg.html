@@ -109,7 +109,7 @@
                 Trash2: <path d="M3 6h18 M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6 M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2 M10 11v6 M14 11v6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>,
                 AlertCircle: <path d="M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20Zm-1-9h2m-2 4h2" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>,
                 CheckSquare: <path d="m9 11 3 3L22 4 M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>,
-                FileText: <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6z M14 3v5h5 M16 13H8 M16 17H8 M10 9H8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>,
+                FileText: <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z M14 2v6h6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>,
                 Bold: <path d="M14 12a4 4 0 0 0 0-8H6v8 M15 20a4 4 0 0 0 0-8H6v8Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>,
                 Italic: <path d="M19 4h-9M14 20H5M15 4L9 20" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>,
                 Underline: <path d="M6 4v6a6 6 0 0 0 12 0V4 M4 20h16" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>,
@@ -205,9 +205,6 @@ BEGIN
     END IF;
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'team_members' AND column_name = 'managed_teams') THEN
         ALTER TABLE team_members ADD COLUMN managed_teams text[];
-    END IF;
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'team_members' AND column_name = 'system_role') THEN
-        ALTER TABLE team_members ADD COLUMN system_role text DEFAULT 'user';
     END IF;
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'tasks' AND column_name = 'start_date') THEN
         ALTER TABLE tasks ADD COLUMN start_date date;
@@ -1188,7 +1185,7 @@ END $$;
                                     id: taskId,
                                     meeting_id: mId,
                                     text: taskText,
-                                    assignee: currentUser.id,
+                                    assignee: currentUser.id, // Assign to self initially
                                     status: 'pending' // Default status
                                 }, { ignoreDuplicates: true });
                             }
@@ -1317,18 +1314,37 @@ END $$;
             const sortedMeetings = useMemo(() => {
                 if (!currentUser) return [];
                 
-                // Filter by participant (strict check on email or ID)
+                const userEmail = (currentUser.email || '').toLowerCase().trim();
+                const userId = currentUser.id;
+
+                // Filter by participant
                 const userMeetings = meetings.filter(m => {
                     const parts = m.participants || [];
                     return parts.some(p => {
-                        const pId = typeof p === 'object' ? (p.id || p.email) : p;
-                        return pId === currentUser.id || pId === currentUser.email;
+                        // Handle legacy string array or object array
+                        if (typeof p === 'string') {
+                             const pLower = p.toLowerCase().trim();
+                             return p === userId || pLower === userEmail;
+                        }
+                        
+                        // Object case
+                        const pId = p.id; 
+                        const pEmail = p.email ? p.email.toLowerCase().trim() : '';
+                        
+                        // Match ID (Supabase UUID)
+                        if (pId === userId) return true;
+                        // Match Email
+                        if (pEmail === userEmail) return true;
+                        // Match ID acting as Email
+                        if (typeof pId === 'string' && pId.toLowerCase().trim() === userEmail) return true;
+                        
+                        return false;
                     });
                 });
 
                 // Filter by Selected Date
                 const dateFiltered = userMeetings.filter(m => m.date === selectedDate);
-
+                
                 // Sort Descending (Newest first)
                 return dateFiltered.sort((a, b) => {
                     const dateA = new Date(a.date + ' ' + (a.time || '00:00'));
@@ -1421,7 +1437,7 @@ END $$;
                                             {dashboardViewMode === 'meetings' ? 'My Meetings' : (dashboardViewMode === 'tasks' ? 'My Tasks' : (dashboardViewMode === 'team' ? 'Team' : 'Reports'))}
                                         </h2>
                                         <p className="text-gray-500 text-sm mt-1">
-                                            {currentUser.name} {dashboardViewMode === 'meetings' && `• ${new Date(selectedDate).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })}`}
+                                            {currentUser.name}
                                         </p>
                                     </div>
                                     <div className="flex flex-col sm:flex-row items-center gap-3 w-full sm:w-auto">
