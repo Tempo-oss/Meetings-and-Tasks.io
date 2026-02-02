@@ -1300,6 +1300,7 @@ END $$;
 
             if (!session) return <LoginScreen onLogin={handleGoogleLogin} onEmailLogin={handleEmailLogin} />;
 
+            // --- Dashboard View ---
             if (view === 'dashboard') {
                 return (
                     <div className="flex flex-col h-screen bg-gray-50">
@@ -1396,8 +1397,9 @@ END $$;
                                                         key={t.id} 
                                                         task={t} 
                                                         meetingTitle={mtg ? mtg.title : 'Unknown Meeting'} 
-                                                        onStatusChange={handleUpdateTask} 
-                                                        onObstacleChange={handleUpdateTask}
+                                                        // Pass object to handleUpdateTask, not string
+                                                        onStatusChange={(id, val) => handleUpdateTask(id, { status: val, done: val === 'completed' })}
+                                                        onObstacleChange={(id, val) => handleUpdateTask(id, { obstacles: val })}
                                                     />
                                                 );
                                             })
@@ -1443,11 +1445,19 @@ END $$;
                             attendees={allPossibleAssignees}
                             currentUserId={currentUser ? currentUser.id : null}
                             onUpdateTask={handleUpdateTask}
-                            onAdd={(mId, text, assignee) => {
+                            onAdd={(mId, text, assignee, start, end) => { // Added start, end
                                 const newId = `t_${Date.now()}`;
-                                setTasks(prev => [...prev, { id: newId, meetingId: mId, text, assignee, status: 'pending' }]);
+                                setTasks(prev => [...prev, { id: newId, meetingId: mId, text, assignee, status: 'pending', start_date: start, end_date: end }]);
                                 if (dbStatus === 'connected') {
-                                    supabase.from('tasks').insert({ id: newId, meeting_id: mId, text, assignee, status: 'pending' }).then();
+                                    supabase.from('tasks').insert({ 
+                                        id: newId, 
+                                        meeting_id: mId, 
+                                        text, 
+                                        assignee, 
+                                        status: 'pending',
+                                        start_date: start,
+                                        end_date: end 
+                                    }).then();
                                 }
                             }}
                             meetingId={m.id}
