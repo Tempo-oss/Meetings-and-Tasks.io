@@ -86,8 +86,44 @@
             const today = new Date();
             end.setHours(0,0,0,0);
             today.setHours(0,0,0,0);
+            
             const diffTime = end - today;
-            return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+            const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+            return diffDays;
+        };
+
+        // --- PARTICIPANT CHECK HELPER (CRITICAL FOR VISIBILITY) ---
+        const isUserParticipant = (meeting, user) => {
+            if (!meeting || !user) return false;
+            const parts = meeting.participants || [];
+            if (!Array.isArray(parts)) return false;
+            
+            const userEmail = (user.email || '').toLowerCase().trim();
+            const userId = user.id;
+
+            return parts.some(p => {
+                // Handle different data shapes
+                let pId, pEmail;
+                if (typeof p === 'string') {
+                    pId = p;
+                    pEmail = p;
+                } else if (typeof p === 'object' && p !== null) {
+                    pId = p.id;
+                    pEmail = p.email;
+                } else {
+                    return false;
+                }
+                
+                // 1. Check UUID match
+                if (pId === userId) return true;
+                
+                // 2. Check Email match (Robust)
+                if (pEmail && typeof pEmail === 'string' && pEmail.toLowerCase().trim() === userEmail) return true;
+                // Some older data might have email in the ID field
+                if (typeof pId === 'string' && pId.toLowerCase().trim() === userEmail) return true;
+                
+                return false;
+            });
         };
 
         const DEPARTMENTS = ['Managers', 'Leaders', 'Quality', 'Training', 'HR', 'Mentors', 'WFM', 'Eng team'];
@@ -1514,7 +1550,6 @@ END $$;
                         })) : [];
                         
                         // Force include current user (the owner of the calendar) in participants
-                        // We must ensure the current user is added so they can SEE the meeting later
                         const userInAttendees = attendees.find(a => a.email && a.email.toLowerCase() === currentUser.email.toLowerCase());
                         if (!userInAttendees) {
                             attendees.push({
