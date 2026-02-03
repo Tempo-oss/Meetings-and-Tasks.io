@@ -86,10 +86,8 @@
             const today = new Date();
             end.setHours(0,0,0,0);
             today.setHours(0,0,0,0);
-            
             const diffTime = end - today;
-            const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-            return diffDays;
+            return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
         };
 
         // --- PARTICIPANT CHECK HELPER (CRITICAL FOR VISIBILITY) ---
@@ -1687,6 +1685,24 @@ END $$;
                 setShowQuickAdd(false);
             };
 
+            // Check if current user is a manager or admin
+            const isManager = useMemo(() => {
+                if (!currentUser) return false;
+                if (currentUser.system_role === 'admin') return true;
+                
+                // Check team_members table for role 'Owner' or managed_teams
+                const memberRecord = teamMembers.find(m => 
+                    m.email && m.email.toLowerCase() === (currentUser.email || '').toLowerCase()
+                );
+                
+                if (memberRecord) {
+                    if (memberRecord.role === 'Owner') return true;
+                    if (memberRecord.managed_teams && memberRecord.managed_teams.length > 0) return true;
+                }
+                
+                return false;
+            }, [currentUser, teamMembers]);
+
             // --- MEETING LIST LOGIC (All meetings, sorted by date) ---
             const sortedMeetings = useMemo(() => {
                 if (!currentUser) return [];
@@ -1736,7 +1752,12 @@ END $$;
             const filteredTasks = useMemo(() => {
                 // First filter by SCOPE (Me vs My Team)
                 let scopeFiltered = [];
-                if (taskScope === 'me' || currentUser?.system_role !== 'admin') { // Force 'me' for regular users
+                
+                // If not manager, force 'me' scope. If manager, respect taskScope.
+                // Note: isManager is calculated above.
+                const effectiveScope = isManager ? taskScope : 'me';
+
+                if (effectiveScope === 'me') {
                     const myEmail = (currentUser?.email || '').toLowerCase().trim();
                     const myId = currentUser?.id;
 
@@ -1744,22 +1765,30 @@ END $$;
                         const assignee = (t.assignee || '').toLowerCase().trim();
                         return assignee === myId || assignee === myEmail;
                     }); 
-                } else if (taskScope === 'team') {
+                } else if (effectiveScope === 'team') {
                     // Find teams user manages
                     const myManagedTeams = [];
-                    const userEmail = currentUser?.email || session?.user?.email;
+                    const userEmail = (currentUser?.email || '').toLowerCase();
                     
-                    const meInTeam = teamMembers.find(tm => tm.email === userEmail);
+                    const meInTeam = teamMembers.find(tm => tm.email && tm.email.toLowerCase() === userEmail);
                     
                     if (meInTeam) {
-                        const teamsOwned = teamMembers
-                            .filter(tm => tm.email === userEmail && tm.role === 'Owner')
-                            .map(tm => tm.team);
-                        myManagedTeams.push(...teamsOwned);
+                        // Direct ownership of a team
+                        // Note: If role is Owner, they manage their own team (meInTeam.team)
+                        if (meInTeam.role === 'Owner' && meInTeam.team) {
+                            myManagedTeams.push(meInTeam.team);
+                        }
                         
-                        if (meInTeam.team === 'Managers' && meInTeam.managed_teams) {
+                        // Delegated management
+                        if (meInTeam.managed_teams && Array.isArray(meInTeam.managed_teams)) {
                             myManagedTeams.push(...meInTeam.managed_teams);
                         }
+                    }
+                    
+                    // If admin, maybe show all teams? Or just let them see based on above?
+                    // Let's refine `myManagedTeams` for Admin.
+                    if (currentUser?.system_role === 'admin') {
+                         myManagedTeams.push(...DEPARTMENTS);
                     }
 
                     // Get all members of these teams
@@ -1767,6 +1796,7 @@ END $$;
                         .filter(tm => myManagedTeams.includes(tm.team))
                         .map(tm => tm.email);
                         
+                    // Include tasks assigned to these emails
                     scopeFiltered = tasks.filter(t => teamMemberEmails.includes(t.assignee));
                 }
 
@@ -1775,7 +1805,7 @@ END $$;
                 if (taskFilter === 'completed') return scopeFiltered.filter(t => (t.status === 'completed' || t.done));
                 if (taskFilter === 'pending') return scopeFiltered.filter(t => (t.status !== 'completed' && !t.done));
                 return scopeFiltered;
-            }, [tasks, taskFilter, taskScope, currentUser, teamMembers, session]);
+            }, [tasks, taskFilter, taskScope, currentUser, teamMembers, session, isManager]);
 
             // Combine participants for robust assignment
             const allPossibleAssignees = useMemo(() => {
@@ -1868,8 +1898,8 @@ END $$;
 
                                         {dashboardViewMode === 'tasks' && (
                                             <div className="flex gap-2 w-full sm:w-auto items-center">
-                                                {/* Only show scope toggle if admin/manager */}
-                                                {currentUser.system_role === 'admin' && (
+                                                {/* Only show scope toggle if manager */}
+                                                {isManager && (
                                                     <div className="flex items-center bg-white border border-gray-200 rounded-lg p-0.5">
                                                         <button onClick={() => setTaskScope('me')} className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${taskScope === 'me' ? 'bg-gray-100 text-gray-900' : 'text-gray-500'}`}>Me</button>
                                                         <button onClick={() => setTaskScope('team')} className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${taskScope === 'team' ? 'bg-gray-100 text-gray-900' : 'text-gray-500'}`}>My Team</button>
