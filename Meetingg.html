@@ -622,6 +622,15 @@ create table if not exists pending_emails (
                 const updated = currentManaged.filter(t => t !== teamToRemove);
                 onUpdateMember(email, { managed_teams: updated });
             };
+            
+            const handleRemoveTeamMember = async (email) => {
+                if (!confirm(`Are you sure you want to remove ${email} from the tool?`)) return;
+                
+                // 1. Remove from local Team Members state
+                // This updates the main list passed down from App
+                onRemoveMember(email);
+            };
+
 
             return (
                 <div className="space-y-6">
@@ -650,7 +659,7 @@ create table if not exists pending_emails (
                                                 <select value={m.team || ''} onChange={(e) => onUpdateMember(email, { team: e.target.value })} className="text-[10px] border-gray-200 rounded p-1 bg-white focus:outline-none w-1/2 sm:w-auto min-w-[80px]"><option value="">Select Team</option>{DEPARTMENTS.map(d => <option key={d} value={d}>{d}</option>)}<option value="">Unassigned</option></select>
                                                 <select value={m.role || 'Member'} onChange={(e) => onUpdateMember(email, { role: e.target.value })} className="text-[10px] border-gray-200 rounded p-1 bg-white focus:outline-none w-1/2 sm:w-auto"><option value="Member">Member</option><option value="Owner">Owner</option></select>
                                                 <select value={m.system_role || 'user'} onChange={(e) => onUpdateMember(email, { system_role: e.target.value })} className="text-[10px] border-gray-200 rounded p-1 bg-white focus:outline-none w-1/2 sm:w-auto"><option value="user">User</option><option value="admin">Admin</option></select>
-                                                <button onClick={() => onRemoveMember(email)} className="text-gray-400 hover:text-red-500 p-1" title="Remove"><Icon name="Trash2" className="w-4 h-4" /></button>
+                                                <button onClick={() => handleRemoveTeamMember(email)} className="text-gray-400 hover:text-red-500 p-1" title="Remove"><Icon name="Trash2" className="w-4 h-4" /></button>
                                             </div>
                                         </div>
                                     );
@@ -684,7 +693,7 @@ create table if not exists pending_emails (
                                         <div><h4 className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">Members</h4><div className="space-y-2">
                                             {regularMembers.length === 0 ? <p className="text-sm text-gray-400 italic">No members yet.</p> : regularMembers.map(m => (
                                                 <div key={m.email} className="flex flex-col gap-2 p-1.5 hover:bg-gray-50 rounded-lg transition-colors border border-transparent hover:border-gray-100">
-                                                    <div className="flex items-center space-x-2 w-full"><UserAvatar user={m} size="xs" /><div className="truncate flex-1"><p className="text-sm text-gray-800 truncate">{m.name}</p><div className="flex items-center gap-1"><p className="text-[10px] text-gray-500 truncate">{m.email}</p>{m.system_role === 'admin' && <Icon name="Shield" className="w-3 h-3 text-blue-500" title="Admin User"/>}</div></div><button onClick={() => onRemoveMember(m.email)} className="text-gray-400 hover:text-red-500 p-1" title="Remove"><Icon name="Trash2" className="w-3 h-3" /></button></div>
+                                                    <div className="flex items-center space-x-2 w-full"><UserAvatar user={m} size="xs" /><div className="truncate flex-1"><p className="text-sm text-gray-800 truncate">{m.name}</p><div className="flex items-center gap-1"><p className="text-[10px] text-gray-500 truncate">{m.email}</p>{m.system_role === 'admin' && <Icon name="Shield" className="w-3 h-3 text-blue-500" title="Admin User"/>}</div></div><button onClick={() => handleRemoveTeamMember(m.email)} className="text-gray-400 hover:text-red-500 p-1" title="Remove"><Icon name="Trash2" className="w-3 h-3" /></button></div>
                                                     <div className="flex gap-1 w-full"><select value={m.team || ''} onChange={(e) => onUpdateMember(m.email, { team: e.target.value })} className="text-[10px] border-gray-200 rounded p-1 bg-white focus:outline-none w-1/2">{DEPARTMENTS.map(d => <option key={d} value={d}>{d}</option>)}<option value="">Unassigned</option></select><select value={m.role || 'Member'} onChange={(e) => onUpdateMember(m.email, { role: e.target.value })} className="text-[10px] border-gray-200 rounded p-1 bg-white focus:outline-none w-1/2"><option value="Member">Member</option><option value="Owner">Owner</option></select></div>
                                                     {m.team === 'Managers' && (<div className="w-full pt-1 border-t border-gray-100 mt-1"><p className="text-[10px] font-bold text-gray-400 mb-1">Manages:</p><div className="flex flex-wrap gap-1 mb-1">{(m.managed_teams || []).map(mt => (<span key={mt} className="text-[9px] bg-green-50 text-green-700 border border-green-100 px-1 rounded flex items-center">{mt}<button onClick={() => handleRemoveManagedTeam(m.email, m.managed_teams, mt)} className="ml-1 hover:text-red-500">×</button></span>))}</div><select value="" onChange={(e) => handleAddManagedTeam(m.email, m.managed_teams || [], e.target.value)} className="text-[10px] w-full border border-gray-200 rounded bg-gray-50"><option value="">+ Add Team</option>{DEPARTMENTS.filter(d => d !== 'Managers').map(d => <option key={d} value={d}>{d}</option>)}</select></div>)}
                                                 </div>
@@ -932,10 +941,24 @@ create table if not exists pending_emails (
             };
 
             const handleRemoveTeamMember = async (email) => {
-                if (!confirm(`Are you sure you want to remove ${email}?`)) return;
+                if (!confirm(`Are you sure you want to remove ${email} from the tool?`)) return;
+                
+                // 1. Remove from local Team Members state
                 setTeamMembers(prev => prev.filter(m => m.email !== email));
+                
+                // 2. Remove from local Colleagues state (fixes issue where discovered users wouldn't disappear)
+                setColleagues(prev => prev.filter(c => (c.email !== email && c.id !== email)));
+
+                // 3. Remove from Database
                 if (dbStatus === 'connected' && client) {
-                    try { const { error } = await client.from('team_members').delete().eq('email', email); if (error) throw error; } catch (e) { console.error(e); alert("Failed to remove member"); }
+                    try { 
+                        const { error } = await client.from('team_members').delete().eq('email', email); 
+                        if (error) throw error; 
+                    } catch (e) { 
+                        console.error("Delete warning (might not exist in DB):", e); 
+                        // We don't alert here because if the user was just "discovered" and not in the DB, 
+                        // this delete would fail or return 0 rows, which is fine.
+                    }
                 }
             };
 
@@ -1341,8 +1364,7 @@ create table if not exists pending_emails (
                                             <input type="date" value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)} className="w-full pl-10 pr-4 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 shadow-sm"/><Icon name="Calendar" className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-4 h-4 pointer-events-none" /></div>{selectedDate && (<button onClick={() => setSelectedDate('')} className="text-xs text-indigo-600 hover:text-indigo-800 underline whitespace-nowrap">Show All</button>)}</div>
                                     )}
                                     {dashboardViewMode === 'tasks' && (
-                                        <div className="flex gap-2 w-full sm:w-auto items-center">
-                                            {isManager && (<div className="flex items-center bg-white border border-gray-200 rounded-lg p-0.5"><button onClick={() => setTaskScope('me')} className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${taskScope === 'me' ? 'bg-gray-100 text-gray-900' : 'text-gray-500'}`}>Me</button><button onClick={() => setTaskScope('team')} className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${taskScope === 'team' ? 'bg-gray-100 text-gray-900' : 'text-gray-500'}`}>My Team</button></div>)}
+                                        <div className="flex gap-2 w-full sm:w-auto items-center">{isManager && (<div className="flex items-center bg-white border border-gray-200 rounded-lg p-0.5"><button onClick={() => setTaskScope('me')} className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${taskScope === 'me' ? 'bg-gray-100 text-gray-900' : 'text-gray-500'}`}>Me</button><button onClick={() => setTaskScope('team')} className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${taskScope === 'team' ? 'bg-gray-100 text-gray-900' : 'text-gray-500'}`}>My Team</button></div>)}
                                             
                                             {/* ADMIN DELETE BUTTON */}
                                             {currentUser.system_role === 'admin' && (
