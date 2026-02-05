@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MeetingMate</title>
+    <title>MeetingMate - Team Edition</title>
     
     <!-- Robust Favicon -->
     <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📅</text></svg>">
@@ -23,7 +23,6 @@
 
     <style>
         body { font-family: 'Inter', sans-serif; }
-        /* Custom scrollbar for better aesthetics */
         ::-webkit-scrollbar { width: 6px; height: 6px; }
         ::-webkit-scrollbar-track { background: transparent; }
         ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
@@ -31,7 +30,6 @@
     </style>
 </head>
 <body class="bg-gray-50 text-gray-900 h-screen overflow-hidden">
-    <!-- Mount Point -->
     <div id="root" class="h-full"></div>
 
     <script type="text/babel">
@@ -111,7 +109,7 @@ create table if not exists pending_emails (
 );
 `;
 
-        // --- Icon Component (Mapping Lucide names to SVGs) ---
+        // --- Icon Component ---
         const Icon = ({ name, className, ...props }) => {
             const icons = {
                 Calendar: <path d="M19 4H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2Zm-13 0V2m12 2V2M3 10h18" />,
@@ -180,13 +178,12 @@ create table if not exists pending_emails (
                     className={className} 
                     {...props}
                 >
-                    {icons[name] || <circle cx="12" cy="12" r="10" />}
+                    {icons[name] || <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2" />}
                 </svg>
             );
         };
 
         // --- Sub-Components ---
-
         const UserAvatar = ({ user, size = 'md' }) => {
             const sizeClasses = { sm: 'w-6 h-6 text-xs', md: 'w-8 h-8 text-sm', lg: 'w-10 h-10 text-base' };
             if (!user) return null;
@@ -782,6 +779,7 @@ create table if not exists pending_emails (
             const [syncRange, setSyncRange] = useState('upcoming'); 
             const [taskFilter, setTaskFilter] = useState('all'); 
             const [taskScope, setTaskScope] = useState('me'); 
+            const [meetingScope, setMeetingScope] = useState('me'); // Added Meeting Scope
             const [showQuickAdd, setShowQuickAdd] = useState(false); 
 
             const [meetings, setMeetings] = useState([]);
@@ -952,59 +950,35 @@ create table if not exists pending_emails (
             const handleImportFromDoc = async (meeting) => {
                 if (!session?.provider_token) { alert("Missing Google Token. Please re-login."); return; }
                 if (!meeting.google_doc_link) { alert("No Google Doc linked to this meeting."); return; }
-                
                 const match = meeting.google_doc_link.match(/\/d\/([a-zA-Z0-9-_]+)/);
                 if (!match) { alert("Invalid Google Doc Link."); return; }
                 const docId = match[1];
-
                 setIsSyncing(true);
                 try {
-                    const resp = await fetch(`https://docs.googleapis.com/v1/documents/${docId}`, {
-                        headers: { Authorization: `Bearer ${session.provider_token}` }
-                    });
-                    
-                    if (!resp.ok) {
-                         const err = await resp.json();
-                         throw new Error(err.error?.message || "Failed to fetch Doc");
-                    }
-                    
+                    const resp = await fetch(`https://docs.googleapis.com/v1/documents/${docId}`, { headers: { Authorization: `Bearer ${session.provider_token}` } });
+                    if (!resp.ok) { const err = await resp.json(); throw new Error(err.error?.message || "Failed to fetch Doc"); }
                     const docData = await resp.json();
                     let tasksFound = [];
                     
-                    // Helper to find user by name mentioned in text
                     const findUserInText = (text) => {
                         const lowerText = text.toLowerCase();
-                        // Search in teamMembers and attendees
                         const allUsers = [...teamMembers, ...((meeting.participants || []).map(p => typeof p === 'string' ? {name:p, id:p} : p))];
-                        
                         for (const u of allUsers) {
                             if (u.name && lowerText.includes('@' + u.name.toLowerCase())) return u.id || u.email;
                             if (u.name && lowerText.includes('(' + u.name.toLowerCase() + ')')) return u.id || u.email;
                         }
-                        return currentUser.id; // Default to me
+                        return currentUser.id;
                     };
 
                     if (docData.body && docData.body.content) {
                         docData.body.content.forEach(elem => {
                             if (elem.paragraph) {
                                 let paraText = '';
-                                elem.paragraph.elements.forEach(pElem => {
-                                    if (pElem.textRun) {
-                                        paraText += pElem.textRun.content;
-                                    }
-                                });
+                                elem.paragraph.elements.forEach(pElem => { if (pElem.textRun) paraText += pElem.textRun.content; });
                                 paraText = paraText.trim();
-                                
-                                // Heuristics for a task:
-                                // 1. Starts with TODO, Task, or [ ]
-                                // 2. Is a Checklist item (bullet with glyphType CHECKBOX - though API detail varies, simple bullet check helps)
-                                // 3. Or just simple bullet logic if requested
-                                
                                 const isTaskKeyword = /^(?:-? ?\[ ?\]|TODO:|Task:)/i.test(paraText);
                                 const isBullet = !!elem.paragraph.bullet;
-                                
                                 if (isTaskKeyword || (isBullet && paraText.length > 3)) {
-                                    // It's a task candidate
                                     let cleanText = paraText.replace(/^(?:-? ?\[ ?\]|TODO:|Task:)\s*/i, '').trim();
                                     if (cleanText) {
                                         const assignedTo = findUserInText(cleanText);
@@ -1014,47 +988,18 @@ create table if not exists pending_emails (
                             }
                         });
                     }
-
-                    if (tasksFound.length === 0) {
-                        alert("No tasks found in Doc. \nTip: Use 'TODO:', 'Task:', or checkboxes.");
-                    } else {
+                    if (tasksFound.length === 0) { alert("No tasks found in Doc. \nTip: Use 'TODO:', 'Task:', or checkboxes."); } 
+                    else {
                         let createdCount = 0;
                         for (const task of tasksFound) {
                              const taskId = `t_doc_${Date.now()}_${Math.floor(Math.random()*10000)}`;
-                             
-                             // Optimistic update
-                             setTasks(prev => [...prev, { 
-                                id: taskId, 
-                                meetingId: meeting.id, 
-                                text: task.text, 
-                                assignee: task.assignee, 
-                                status: 'pending',
-                                start_date: getTodayISO(),
-                                end_date: getTodayISO()
-                             }]);
-
-                             if (client) {
-                                 await client.from('tasks').insert({ 
-                                    id: taskId, 
-                                    meeting_id: meeting.id, 
-                                    text: task.text, 
-                                    assignee: task.assignee, 
-                                    status: 'pending',
-                                    start_date: getTodayISO(),
-                                    end_date: getTodayISO()
-                                });
-                             }
+                             setTasks(prev => [...prev, { id: taskId, meetingId: meeting.id, text: task.text, assignee: task.assignee, status: 'pending', start_date: getTodayISO(), end_date: getTodayISO() }]);
+                             if (client) { await client.from('tasks').insert({ id: taskId, meeting_id: meeting.id, text: task.text, assignee: task.assignee, status: 'pending', start_date: getTodayISO(), end_date: getTodayISO() }); }
                              createdCount++;
                         }
                         alert(`Imported ${createdCount} tasks!`);
                     }
-
-                } catch (e) {
-                    console.error(e);
-                    alert("Import failed: " + e.message);
-                } finally {
-                    setIsSyncing(false);
-                }
+                } catch (e) { console.error(e); alert("Import failed: " + e.message); } finally { setIsSyncing(false); }
             };
 
             const handleAddTeamMember = async (email, name, team, role, systemRole) => {
@@ -1071,25 +1016,18 @@ create table if not exists pending_emails (
                 if (dbStatus === 'connected' && client) { try { const { error } = await client.from('team_members').upsert({ email, name: (colleagues.find(c => c.email === email)?.name || email), ...updates }); if (error) throw error; } catch (e) { console.error(e); alert("Update failed."); } }
             };
 
-            // Modified Task Update Handler for "Completed" Notification
             const handleUpdateTask = async (taskId, updates) => {
                 setTasks(prev => prev.map(t => t.id === taskId ? { ...t, ...updates } : t));
                 if (dbStatus === 'connected' && client) { 
                     await client.from('tasks').update(updates).eq('id', taskId); 
-                    
-                    // Email Logic: If completed
                     if (updates.status === 'completed' || updates.done === true) {
                         const task = tasks.find(t => t.id === taskId);
                         if (task) {
                             const assigneeId = task.assignee;
                             const assigneeUser = teamMembers.find(m => m.email === assigneeId || m.id === assigneeId) || colleagues.find(c => c.email === assigneeId || c.id === assigneeId);
-                            
                             if (assigneeUser && assigneeUser.team) {
-                                // Find Manager: Either Owner of team OR Manager who has this team in managed_teams
                                 const manager = teamMembers.find(m => (m.team === assigneeUser.team && m.role === 'Owner') || (m.managed_teams && m.managed_teams.includes(assigneeUser.team)));
-                                if (manager && manager.email) {
-                                    queueEmail(manager.email, `Task Completed: ${task.text}`, `Hi ${manager.name},\n\n${assigneeUser.name} has completed the task: "${task.text}".\n\n- MeetingMate`);
-                                }
+                                if (manager && manager.email) { queueEmail(manager.email, `Task Completed: ${task.text}`, `Hi ${manager.name},\n\n${assigneeUser.name} has completed the task: "${task.text}".\n\n- MeetingMate`); }
                             }
                         }
                     }
@@ -1117,23 +1055,47 @@ create table if not exists pending_emails (
                 if (!currentUser) return [];
                 const userEmail = (currentUser.email || '').toLowerCase().trim();
                 const userId = currentUser.id;
-                const userMeetings = meetings.filter(m => {
-                    const parts = m.participants || [];
-                    return parts.some(p => {
-                        if (typeof p === 'string') return p === userId || p.toLowerCase().trim() === userEmail;
-                        const pId = p.id; const pEmail = p.email ? p.email.toLowerCase().trim() : '';
-                        if (pId === userId) return true; if (pEmail === userEmail) return true;
-                        if (typeof pId === 'string' && pId.toLowerCase().trim() === userEmail) return true;
-                        return false;
+                
+                let relevantMeetings = meetings;
+                if (isManager && meetingScope === 'team') {
+                    const myManagedTeams = [];
+                    const meInTeam = teamMembers.find(tm => tm.email && tm.email.toLowerCase() === userEmail);
+                    if (meInTeam) {
+                         if (meInTeam.role === 'Owner' && meInTeam.team) myManagedTeams.push(meInTeam.team);
+                         if (meInTeam.managed_teams) myManagedTeams.push(...meInTeam.managed_teams);
+                    }
+                    // Removed: if (currentUser.system_role === 'admin') myManagedTeams.push(...DEPARTMENTS);
+                    const teamMemberIds = teamMembers.filter(tm => myManagedTeams.includes(tm.team)).flatMap(tm => [tm.email, tm.email ? tm.email.toLowerCase() : null, tm.id]).filter(Boolean);
+                    
+                    relevantMeetings = meetings.filter(m => {
+                        const parts = m.participants || [];
+                        return parts.some(p => {
+                            const pId = typeof p === 'string' ? p : (p.id || p.email);
+                            if (!pId) return false;
+                            const pLower = pId.toLowerCase().trim();
+                            return teamMemberIds.includes(pLower) || teamMemberIds.includes(pId);
+                        });
                     });
-                });
-                const dateFiltered = selectedDate ? userMeetings.filter(m => m.date === selectedDate) : userMeetings;
+                } else {
+                    relevantMeetings = meetings.filter(m => {
+                        const parts = m.participants || [];
+                        return parts.some(p => {
+                            if (typeof p === 'string') return p === userId || p.toLowerCase().trim() === userEmail;
+                            const pId = p.id; const pEmail = p.email ? p.email.toLowerCase().trim() : '';
+                            if (pId === userId) return true; if (pEmail === userEmail) return true;
+                            if (typeof pId === 'string' && pId.toLowerCase().trim() === userEmail) return true;
+                            return false;
+                        });
+                    });
+                }
+
+                const dateFiltered = selectedDate ? relevantMeetings.filter(m => m.date === selectedDate) : relevantMeetings;
                 return dateFiltered.sort((a, b) => {
                     const dateA = new Date(a.date + ' ' + (a.time || '00:00'));
                     const dateB = new Date(b.date + ' ' + (b.time || '00:00'));
                     return dateB - dateA;
                 });
-            }, [meetings, currentUser, selectedDate]);
+            }, [meetings, currentUser, selectedDate, meetingScope, isManager, teamMembers]);
 
             const filteredTasks = useMemo(() => {
                 let scopeFiltered = [];
@@ -1150,7 +1112,7 @@ create table if not exists pending_emails (
                         if (meInTeam.role === 'Owner' && meInTeam.team) myManagedTeams.push(meInTeam.team);
                         if (meInTeam.managed_teams) myManagedTeams.push(...meInTeam.managed_teams);
                     }
-                    if (currentUser?.system_role === 'admin') myManagedTeams.push(...DEPARTMENTS);
+                    // Removed: if (currentUser?.system_role === 'admin') myManagedTeams.push(...DEPARTMENTS);
                     const teamMemberEmails = teamMembers.filter(tm => myManagedTeams.includes(tm.team)).map(tm => tm.email);
                     scopeFiltered = tasks.filter(t => teamMemberEmails.includes(t.assignee));
                 }
@@ -1192,7 +1154,9 @@ create table if not exists pending_emails (
                                         <button onClick={() => setDashboardViewMode('reports')} className={`flex-1 sm:flex-none px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${dashboardViewMode === 'reports' ? 'bg-indigo-100 text-indigo-700' : 'text-gray-600 hover:bg-gray-50'}`}>Reports</button>
                                     </div>
                                     {dashboardViewMode === 'meetings' && (
-                                        <div className="flex items-center gap-2"><div className="relative w-full sm:w-auto"><input type="date" value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)} className="w-full pl-10 pr-4 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 shadow-sm"/><Icon name="Calendar" className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-4 h-4 pointer-events-none" /></div>{selectedDate && (<button onClick={() => setSelectedDate('')} className="text-xs text-indigo-600 hover:text-indigo-800 underline whitespace-nowrap">Show All</button>)}</div>
+                                        <div className="flex items-center gap-2"><div className="relative w-full sm:w-auto">
+                                            {isManager && (<div className="flex items-center bg-white border border-gray-200 rounded-lg p-0.5 mb-2 sm:mb-0 sm:mr-2"><button onClick={() => setMeetingScope('me')} className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${meetingScope === 'me' ? 'bg-gray-100 text-gray-900' : 'text-gray-500'}`}>Me</button><button onClick={() => setMeetingScope('team')} className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${meetingScope === 'team' ? 'bg-gray-100 text-gray-900' : 'text-gray-500'}`}>My Team</button></div>)}
+                                            <input type="date" value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)} className="w-full pl-10 pr-4 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 shadow-sm"/><Icon name="Calendar" className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-4 h-4 pointer-events-none" /></div>{selectedDate && (<button onClick={() => setSelectedDate('')} className="text-xs text-indigo-600 hover:text-indigo-800 underline whitespace-nowrap">Show All</button>)}</div>
                                     )}
                                     {dashboardViewMode === 'tasks' && (
                                         <div className="flex gap-2 w-full sm:w-auto items-center">{isManager && (<div className="flex items-center bg-white border border-gray-200 rounded-lg p-0.5"><button onClick={() => setTaskScope('me')} className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${taskScope === 'me' ? 'bg-gray-100 text-gray-900' : 'text-gray-500'}`}>Me</button><button onClick={() => setTaskScope('team')} className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${taskScope === 'team' ? 'bg-gray-100 text-gray-900' : 'text-gray-500'}`}>My Team</button></div>)}<select value={taskFilter} onChange={(e) => setTaskFilter(e.target.value)} className="w-full pl-3 pr-8 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 shadow-sm"><option value="all">All Status</option><option value="pending">Pending</option><option value="completed">Completed</option></select><button onClick={() => setShowQuickAdd(!showQuickAdd)} className="bg-indigo-600 text-white p-2 rounded-lg hover:bg-indigo-700" title="Add Personal Task"><Icon name="Plus" className="w-4 h-4" /></button></div>
