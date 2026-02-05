@@ -775,9 +775,7 @@ create table if not exists pending_emails (
 
                     {meetingId && meetingId !== 'standalone' && (
                         <div className="px-6 py-2 flex justify-end">
-                            <button className="text-xs flex items-center text-indigo-600 hover:text-indigo-800 font-medium" onClick={onImport}>
-                                <Icon name="Download" className="w-3 h-3 mr-1" /> Import from Doc
-                            </button>
+                            {/* REMOVED: Manual Import Button (now automatic on click) */}
                         </div>
                     )}
 
@@ -1055,23 +1053,23 @@ create table if not exists pending_emails (
                 } catch (e) { console.error(e); alert("Sync Error: " + e.message); } finally { setIsSyncing(false); }
             };
 
-            const handleImportFromDoc = async (meeting, silent = false) => {
-                if (!session?.provider_token) { if(!silent) alert("Missing Google Token. Please re-login."); return; }
-                if (!meeting.google_doc_link) { if(!silent) alert("No Google Doc linked to this meeting."); return; }
-                
+            const handleImportFromDoc = async (meeting) => {
+                if (!session?.provider_token) { alert("Missing Google Token. Please re-login."); return; }
+                if (!meeting.google_doc_link) { alert("No Google Doc linked to this meeting."); return; }
                 const match = meeting.google_doc_link.match(/\/d\/([a-zA-Z0-9-_]+)/);
-                if (!match) { if(!silent) alert("Invalid Google Doc Link."); return; }
+                if (!match) { alert("Invalid Google Doc Link."); return; }
                 const docId = match[1];
-
                 setIsSyncing(true);
                 try {
                     const resp = await fetch(`https://docs.googleapis.com/v1/documents/${docId}`, { headers: { Authorization: `Bearer ${session.provider_token}` } });
                     if (!resp.ok) { const err = await resp.json(); throw new Error(err.error?.message || "Failed to fetch Doc"); }
                     const docData = await resp.json();
                     let tasksFound = [];
+                    let stopProcessing = false;
                     
                     // Improved User Finding Logic
                     const findUserInText = (text, richTextElements) => {
+                        // 1. Check for "Smart Chips" (Person mentions in Google Docs JSON)
                         if (richTextElements && richTextElements.length > 0) {
                             for (const el of richTextElements) {
                                 if (el.person && el.person.personProperties && el.person.personProperties.email) {
@@ -1080,94 +1078,110 @@ create table if not exists pending_emails (
                                         (u.email && u.email.toLowerCase() === email.toLowerCase())
                                     );
                                     if (user) return user.id || user.email;
+                                    // If email found in chip but not in our DB, return email as ID (best effort)
                                     return email;
                                 }
                             }
                         }
 
+                        // 2. Fallback: Check text for name mentions at the start of the string
+                        // e.g., "Mohamed Halim Update..." or "@Mohamed Halim Update..."
                         const lowerText = text.toLowerCase();
                         const allUsers = [...teamMembers, ...((meeting.participants || []).map(p => typeof p === 'string' ? {name:p, id:p} : p))];
+                        
+                        // Sort users by name length descending to match longest names first
                         allUsers.sort((a, b) => (b.name?.length || 0) - (a.name?.length || 0));
 
                         for (const u of allUsers) {
                             if (u.name) {
                                 const name = u.name.toLowerCase();
+                                // Check if the text STARTS with the name (ignoring @ symbol)
                                 if (lowerText.startsWith(name) || lowerText.startsWith('@' + name)) {
                                     return u.id || u.email;
                                 }
                             }
                         }
-                        return currentUser.id;
+                        
+                        return null; // Return null if no assignee found (to skip task)
                     };
 
                     if (docData.body && docData.body.content) {
-                        docData.body.content.forEach(elem => {
+                        for (const elem of docData.body.content) {
+                            if (stopProcessing) break;
+                            
+                            // Check for Section Break or Horizontal Rule (often separate notes from tasks)
+                            if (elem.sectionBreak) {
+                                stopProcessing = true;
+                                break;
+                            }
+                            
                             if (elem.paragraph) {
+                                // Check for visual horizontal rule inside paragraph
+                                if (elem.paragraph.elements?.some(e => e.horizontalRule)) {
+                                    stopProcessing = true;
+                                    break;
+                                }
+
+                                // Only process bullets (checklists usually have bullet property)
                                 if (elem.paragraph.bullet) {
                                     let paraText = '';
                                     let richElements = [];
+
                                     elem.paragraph.elements.forEach(pElem => {
-                                        if (pElem.textRun) paraText += pElem.textRun.content;
-                                        if (pElem.person) richElements.push(pElem);
+                                        if (pElem.textRun) {
+                                            paraText += pElem.textRun.content;
+                                        }
+                                        // Collect elements that might contain people chips
+                                        if (pElem.person) {
+                                            richElements.push(pElem);
+                                        }
                                     });
+                                    
                                     paraText = paraText.trim();
+                                    
+                                    // Remove checkbox glyphs if present in text (e.g. "[ ]", "[]")
+                                    // Google Docs API doesn't always send the glyph in textRun, but just in case
                                     let cleanText = paraText.replace(/^\[\s*\]\s*/, '').trim();
 
+                                    // If text exists
                                     if (cleanText.length > 1) {
                                          const assignedTo = findUserInText(cleanText, richElements);
-                                         const assignedUser = [...teamMembers, ...((meeting.participants || []).map(p => typeof p === 'string' ? {name:p, id:p} : p))].find(u => (u.id === assignedTo || u.email === assignedTo));
-                                         if (assignedUser && assignedUser.name) {
-                                             const nameRegex = new RegExp(`^@?${assignedUser.name}\\s*`, 'i');
-                                             cleanText = cleanText.replace(nameRegex, '').trim();
-                                         }
-                                         if (cleanText) {
-                                            tasksFound.push({ text: cleanText, assignee: assignedTo });
+                                         
+                                         // Only proceed if an owner was found
+                                         if (assignedTo) {
+                                             // Clean the name from the start of the task text if found via text match
+                                             // This makes the task cleaner: "Mohamed Halim Update" -> "Update"
+                                             const assignedUser = [...teamMembers, ...((meeting.participants || []).map(p => typeof p === 'string' ? {name:p, id:p} : p))].find(u => (u.id === assignedTo || u.email === assignedTo));
+                                             
+                                             if (assignedUser && assignedUser.name) {
+                                                 const nameRegex = new RegExp(`^@?${assignedUser.name}\\s*`, 'i');
+                                                 cleanText = cleanText.replace(nameRegex, '').trim();
+                                             }
+                                             
+                                             if (cleanText) {
+                                                tasksFound.push({ text: cleanText, assignee: assignedTo });
+                                             }
                                          }
                                     }
                                 }
                             }
-                        });
+                        }
                     }
 
-                    // Deduplication Logic
-                    const existingMeetingTasks = tasks.filter(t => t.meetingId === meeting.id);
-                    const existingTexts = new Set(existingMeetingTasks.map(t => t.text.trim().toLowerCase()));
-                    const uniqueNewTasks = tasksFound.filter(tf => !existingTexts.has(tf.text.trim().toLowerCase()));
-
-                    if (uniqueNewTasks.length === 0) { 
-                        if (!silent) console.log("No new tasks found in Doc."); 
-                    } else {
+                    if (tasksFound.length === 0) { alert("No assigned checklist items found above the separator line."); } 
+                    else {
                         let createdCount = 0;
-                        const startDate = getTodayISO(); // Use Today as Start Date for new discoveries
+                        const meetingDate = meeting.date || getTodayISO(); // Use Meeting Date
                         
-                        for (const task of uniqueNewTasks) {
+                        for (const task of tasksFound) {
                              const taskId = `t_doc_${Date.now()}_${Math.floor(Math.random()*10000)}`;
-                             setTasks(prev => [...prev, { id: taskId, meetingId: meeting.id, text: task.text, assignee: task.assignee, status: 'pending', start_date: startDate, end_date: null }]); 
-                             if (client) { 
-                                await client.from('tasks').insert({ id: taskId, meeting_id: meeting.id, text: task.text, assignee: task.assignee, status: 'pending', start_date: startDate, end_date: null }); 
-                                
-                                // Email Trigger
-                                if (task.assignee !== currentUser.id) {
-                                    const assigneeUser = [...teamMembers, ...((meeting.participants || []).map(p => typeof p === 'string' ? {name:p, id:p, email:p} : p))].find(u => (u.id === task.assignee || u.email === task.assignee));
-                                    let recipientEmail = null;
-                                    let recipientName = 'Team Member';
-                                    if (assigneeUser) {
-                                        recipientEmail = assigneeUser.email;
-                                        recipientName = assigneeUser.name || recipientName;
-                                    } else if (typeof task.assignee === 'string' && task.assignee.includes('@')) {
-                                        recipientEmail = task.assignee;
-                                    }
-                                    if (recipientEmail) {
-                                        queueEmail(recipientEmail, `New Task Imported: ${task.text}`, `Hi ${recipientName},\n\nA new task was imported from the meeting doc: "${task.text}".\nStart Date: ${startDate}\n\n- MeetingMate`);
-                                    }
-                                }
-                             }
+                             setTasks(prev => [...prev, { id: taskId, meetingId: meeting.id, text: task.text, assignee: task.assignee, status: 'pending', start_date: meetingDate, end_date: null }]); // Due date empty
+                             if (client) { await client.from('tasks').insert({ id: taskId, meeting_id: meeting.id, text: task.text, assignee: task.assignee, status: 'pending', start_date: meetingDate, end_date: null }); }
                              createdCount++;
                         }
-                        if (!silent) alert(`Imported ${createdCount} tasks from Doc!`);
-                        else console.log(`Auto-imported ${createdCount} tasks.`);
+                        alert(`Imported ${createdCount} assigned tasks from Doc!`);
                     }
-                } catch (e) { console.error(e); if(!silent) alert("Import failed: " + e.message); } finally { setIsSyncing(false); }
+                } catch (e) { console.error(e); alert("Import failed: " + e.message); } finally { setIsSyncing(false); }
             };
 
             const handleAddTeamMember = async (email, name, team, role, systemRole) => {
@@ -1205,20 +1219,9 @@ create table if not exists pending_emails (
             const handleAddStandaloneTask = (text, assigneeId, start, end) => {
                 if (!text.trim()) return;
                 const newId = `t_${Date.now()}`;
-                const sDate = start || getTodayISO();
-                const eDate = end || getTodayISO();
-
-                const newTask = { id: newId, meeting_id: 'standalone', text: text, assignee: assigneeId || currentUser.id, status: 'pending', start_date: sDate, end_date: eDate };
+                const newTask = { id: newId, meeting_id: 'standalone', text: text, assignee: assigneeId || currentUser.id, status: 'pending', start_date: getTodayISO(), end_date: getTodayISO() };
                 setTasks(prev => [newTask, ...prev]);
-                if (dbStatus === 'connected' && client) { 
-                    client.from('tasks').insert(newTask).then(({error}) => { if(error) console.error("Error", error); }); 
-                    if (newTask.assignee !== currentUser.id) {
-                         const assigneeUser = teamMembers.find(m => m.email === newTask.assignee || m.id === newTask.assignee) || colleagues.find(c => c.email === newTask.assignee || c.id === newTask.assignee);
-                         if (assigneeUser && assigneeUser.email) {
-                             queueEmail(assigneeUser.email, `New Task Assigned: ${text}`, `Hi ${assigneeUser.name},\n\nYou have been assigned a new task: "${text}".\nStart: ${sDate}\nDue: ${eDate}\n\n- MeetingMate`);
-                         }
-                    }
-                }
+                if (dbStatus === 'connected' && client) { client.from('tasks').insert(newTask).then(({error}) => { if(error) console.error("Error", error); }); }
                 setShowQuickAdd(false);
             };
 
@@ -1244,7 +1247,12 @@ create table if not exists pending_emails (
                          if (meInTeam.managed_teams) myManagedTeams.push(...meInTeam.managed_teams);
                     }
                     
-                    const teamMemberIds = teamMembers.filter(tm => myManagedTeams.includes(tm.team))
+                    // REMOVED Admin Override: strictly show managed teams only
+                    // if (currentUser.system_role === 'admin') myManagedTeams.push(...DEPARTMENTS);
+                    
+                    const teamMemberIds = teamMembers
+                        .filter(tm => myManagedTeams.includes(tm.team))
+                        // EXCLUDE current user to ensure we only see team members' activity
                         .filter(tm => tm.email && tm.email.toLowerCase() !== userEmail)
                         .flatMap(tm => [tm.email, tm.email ? tm.email.toLowerCase() : null, tm.id])
                         .filter(Boolean);
@@ -1253,9 +1261,14 @@ create table if not exists pending_emails (
                         const parts = m.participants || [];
                         return parts.some(p => {
                             const pId = typeof p === 'string' ? p : (p.id || p.email);
-                            if (!pId) return false;
-                            const pLower = pId.toLowerCase().trim();
-                            return teamMemberIds.includes(pLower) || teamMemberIds.includes(pId);
+                            const pEmail = typeof p === 'object' ? p.email : p;
+                            
+                            if (!pId && !pEmail) return false;
+                            
+                            const pIdLower = pId ? pId.toLowerCase().trim() : '';
+                            const pEmailLower = pEmail ? pEmail.toLowerCase().trim() : '';
+
+                            return teamMemberIds.includes(pIdLower) || teamMemberIds.includes(pEmailLower);
                         });
                     });
                 } else {
@@ -1294,8 +1307,11 @@ create table if not exists pending_emails (
                         if (meInTeam.role === 'Owner' && meInTeam.team) myManagedTeams.push(meInTeam.team);
                         if (meInTeam.managed_teams) myManagedTeams.push(...meInTeam.managed_teams);
                     }
+                    // Removed: if (currentUser?.system_role === 'admin') myManagedTeams.push(...DEPARTMENTS);
+                    
                     const teamMemberIdentifiers = teamMembers
                         .filter(tm => myManagedTeams.includes(tm.team))
+                        // EXCLUDE current user's email so "My Team" only shows OTHERS' tasks
                         .filter(tm => tm.email && tm.email.toLowerCase() !== (currentUser?.email || '').toLowerCase())
                         .flatMap(tm => {
                              const colleague = colleagues.find(c => c.email === tm.email);
@@ -1305,7 +1321,9 @@ create table if not exists pending_emails (
                     scopeFiltered = tasks.filter(t => {
                         const a = t.assignee; 
                         if (!a) return false;
+                        // Extra safety check: Exclude own ID or Email
                         if (a === currentUser?.id || a === currentUser?.email) return false;
+                        
                         return teamMemberIdentifiers.includes(a) || teamMemberIdentifiers.includes(a.toLowerCase());
                     });
                 }
