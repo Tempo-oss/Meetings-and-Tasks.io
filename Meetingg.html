@@ -941,7 +941,7 @@ create table if not exists pending_emails (
             };
 
             const handleRemoveTeamMember = async (email) => {
-                if (!confirm(`Are you sure you want to remove ${email} from the tool?`)) return;
+                if (!confirm(`Are you sure you want to remove ${email}?`)) return;
                 setTeamMembers(prev => prev.filter(m => m.email !== email));
                 if (dbStatus === 'connected' && client) {
                     try { const { error } = await client.from('team_members').delete().eq('email', email); if (error) throw error; } catch (e) { console.error(e); alert("Failed to remove member"); }
