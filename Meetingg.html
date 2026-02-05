@@ -1064,7 +1064,6 @@ create table if not exists pending_emails (
                          if (meInTeam.role === 'Owner' && meInTeam.team) myManagedTeams.push(meInTeam.team);
                          if (meInTeam.managed_teams) myManagedTeams.push(...meInTeam.managed_teams);
                     }
-                    
                     // REMOVED Admin Override: strictly show managed teams only
                     // if (currentUser.system_role === 'admin') myManagedTeams.push(...DEPARTMENTS);
                     
@@ -1129,7 +1128,7 @@ create table if not exists pending_emails (
                     
                     const teamMemberIdentifiers = teamMembers
                         .filter(tm => myManagedTeams.includes(tm.team))
-                        // EXCLUDE current user's email
+                        // EXCLUDE current user's email so "My Team" only shows OTHERS' tasks
                         .filter(tm => tm.email && tm.email.toLowerCase() !== (currentUser?.email || '').toLowerCase())
                         .flatMap(tm => {
                              const colleague = colleagues.find(c => c.email === tm.email);
