@@ -15,9 +15,10 @@
             if (root) {
                 root.innerHTML = `
                     <div style="background-color: #FEF2F2; color: #991B1B; padding: 2rem; font-family: sans-serif; height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center;">
-                        <h2 style="font-size: 1.5rem; font-weight: bold; margin-bottom: 0.5rem;">Startup Error</h2>
+                        <h2 style="font-size: 1.5rem; font-weight: bold; margin-bottom: 0.5rem;">Application Error</h2>
                         <div style="background: #fff; padding: 1rem; border-radius: 0.5rem; border: 1px solid #FCA5A5; text-align: left; max-width: 600px; overflow-x: auto;">
-                            <code style="font-family: monospace;">${msg}</code>
+                            <p style="font-weight:bold; margin-bottom:0.5rem">${msg}</p>
+                            <p style="font-size:0.8rem">Line: ${line} | Col: ${col}</p>
                         </div>
                     </div>
                 `;
@@ -51,35 +52,8 @@
             <p>Loading MeetingMate...</p>
         </div>
     </div>
-    <div id="meetingsContainer"></div>
 
     <script type="text/babel">
-        // Ensure the client is initialized
-        client.events.on("app.activated", function() {
-          // Fetch meetings
-          fetchMeetings();
-        });
-
-        function fetchMeetings() {
-          client.request.get("https://api.yourservice.com/meetings")
-            .then(function(data) {
-              var meetings = JSON.parse(data.response);
-              displayMeetings(meetings);
-            })
-            .catch(function(error) {
-              console.error("Error fetching meetings:", error);
-            });
-        }
-
-        function displayMeetings(meetings) {
-          var meetingsContainer = document.getElementById("meetingsContainer");
-          meetingsContainer.innerHTML = ""; // Clear previous meetings
-          meetings.forEach(function(meeting) {
-            var meetingElement = document.createElement("div");
-            meetingElement.textContent = meeting.title;
-            meetingsContainer.appendChild(meetingElement);
-          });
-        }
         // Dependency Check
         if (!window.React || !window.ReactDOM || !window.supabase) {
             throw new Error("Missing dependencies. Check internet connection.");
@@ -116,6 +90,40 @@
             return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
         };
 
+        // --- PARTICIPANT CHECK HELPER (CRITICAL FOR VISIBILITY) ---
+        const isUserParticipant = (meeting, user) => {
+            if (!meeting || !user) return false;
+            const parts = meeting.participants || [];
+            if (!Array.isArray(parts)) return false;
+            
+            const userEmail = (user.email || '').toLowerCase().trim();
+            const userId = user.id;
+
+            return parts.some(p => {
+                // Handle different data shapes
+                let pId, pEmail;
+                if (typeof p === 'string') {
+                    pId = p;
+                    pEmail = p;
+                } else if (typeof p === 'object' && p !== null) {
+                    pId = p.id;
+                    pEmail = p.email;
+                } else {
+                    return false;
+                }
+                
+                // 1. Check UUID match
+                if (pId === userId) return true;
+                
+                // 2. Check Email match (Robust)
+                if (pEmail && typeof pEmail === 'string' && pEmail.toLowerCase().trim() === userEmail) return true;
+                // Some older data might have email in the ID field
+                if (typeof pId === 'string' && pId.toLowerCase().trim() === userEmail) return true;
+                
+                return false;
+            });
+        };
+
         const DEPARTMENTS = ['Managers', 'Leaders', 'Quality', 'Training', 'HR', 'Mentors', 'WFM', 'Eng team'];
         const ADMIN_EMAILS = ['mohamed.abdelmagid@tempo.fit', 'halim@tempo.fit', 'nancy@tempo.fit'];
 
@@ -135,7 +143,7 @@
                 Trash2: <path d="M3 6h18 M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6 M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2 M10 11v6 M14 11v6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>,
                 AlertCircle: <path d="M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20Zm-1-9h2m-2 4h2" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>,
                 CheckSquare: <path d="m9 11 3 3L22 4 M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>,
-                FileText: <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6z M14 3v5h5 M16 13H8 M16 17H8 M10 9H8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>,
+                FileText: <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z M14 2v6h6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>,
                 Bold: <path d="M14 12a4 4 0 0 0 0-8H6v8 M15 20a4 4 0 0 0 0-8H6v8Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>,
                 Italic: <path d="M19 4h-9M14 20H5M15 4L9 20" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>,
                 Underline: <path d="M6 4v6a6 6 0 0 0 12 0V4 M4 20h16" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>,
@@ -150,13 +158,18 @@
                 Mail: <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z M22 6l-10 7L2 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>,
                 UserPlus: <path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2 M8.5 7a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z M20 8v6M23 11h-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>,
                 AlertTriangle: <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z M12 9v4 M12 17h.01" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>,
+                FileText: <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6z M14 3v5h5 M16 13H8 M16 17H8 M10 9H8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>,
                 PieChart: <path d="M21.21 15.89A10 10 0 1 1 8 2.83 M22 12A10 10 0 0 0 12 2v10z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>,
                 Crown: <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>,
                 Briefcase: <path d="M20 7h-3a2 2 0 0 0-2-2h-6a2 2 0 0 0-2 2H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2z M9 7V5h6v2 M12 12a3 3 0 1 0 0-6 3 3 0 0 0 0 6z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>,
                 Hash: <path d="M4 9h16 M4 15h16 M10 3L8 21 M16 3l-2 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>,
                 Layers: <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>,
                 User: <g><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/><circle cx="12" cy="7" r="4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></g>,
-                Shield: <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                Shield: <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>,
+                Filter: <path d="M22 3H2l8 9.46V19l4 2v-8.54L22 3z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>,
+                XCircle: <path d="M22 12A10 10 0 1 1 12 2a10 10 0 0 1 0 20zM15 9l-6 6M9 9l6 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>,
+                Key: <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>,
+                Download: <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4 M7 10l5 5 5-5 M12 15V3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
             };
             return (
                 <svg 
@@ -319,7 +332,21 @@ END $$;
                                 {meeting.time && <span className="flex items-center"><Icon name="Clock" className="w-3 h-3 mr-1" /> {meeting.time}</span>}
                             </div>
                         </div>
-                        {meeting.synced && <div className="bg-blue-50 text-blue-600 p-1.5 rounded-full"><Icon name="Calendar" className="w-4 h-4" /></div>}
+                        <div className="flex items-center space-x-2">
+                            {meeting.google_doc_link && (
+                                <a 
+                                    href={meeting.google_doc_link} 
+                                    target="_blank" 
+                                    rel="noopener noreferrer"
+                                    onClick={(e) => e.stopPropagation()} 
+                                    className="bg-blue-50 text-blue-600 p-1.5 rounded-full hover:bg-blue-100 transition-colors"
+                                    title="Open Google Doc"
+                                >
+                                    <Icon name="FileText" className="w-4 h-4" />
+                                </a>
+                            )}
+                            {meeting.synced && <div className="bg-gray-100 text-gray-600 p-1.5 rounded-full"><Icon name="Calendar" className="w-4 h-4" /></div>}
+                        </div>
                     </div>
                     <div className="flex justify-between items-center mt-4">
                         <div className="flex -space-x-2">
@@ -402,14 +429,82 @@ END $$;
         };
 
         const ReportsView = ({ meetings, tasks, attendees }) => {
+            // -- FILTERS STATE --
+            const [filterOwner, setFilterOwner] = useState('all');
+            const [filterStatus, setFilterStatus] = useState('all');
+            const [filterDate, setFilterDate] = useState('');
+
+            // Extract Unique Options
+            const uniqueOwners = useMemo(() => {
+                const ownerIds = new Set(tasks.map(t => t.assignee));
+                const owners = [];
+                // Find user details for each ID/email in tasks
+                ownerIds.forEach(id => {
+                   const user = attendees.find(u => u.email === id || u.id === id);
+                   if (user) owners.push(user);
+                   else owners.push({ id, name: id, email: id }); // Fallback
+                });
+                // Deduplicate by email/id
+                const unique = new Map();
+                owners.forEach(o => unique.set(o.email || o.id, o));
+                return Array.from(unique.values());
+            }, [tasks, attendees]);
+
+            const uniqueMeetingTitles = useMemo(() => {
+                const titles = new Set(meetings.map(m => m.title));
+                return Array.from(titles).sort();
+            }, [meetings]);
+
+            // Group meetings by title
+            const meetingsByTitle = useMemo(() => {
+                const groups = {};
+                meetings.forEach(m => {
+                    const t = m.title || '(No Title)';
+                    if (!groups[t]) groups[t] = [];
+                    groups[t].push(m);
+                });
+                return groups;
+            }, [meetings]);
+
+            // Filter Logic
             const reportData = useMemo(() => {
                 const data = [];
-                meetings.forEach(meeting => {
-                    const meetingTasks = tasks.filter(t => t.meetingId === meeting.id);
-                    if (meetingTasks.length === 0) return;
+                
+                Object.keys(meetingsByTitle).forEach(title => {
+                     // NO MEETING FILTER
+
+                    let meetingInstances = meetingsByTitle[title];
+
+                    // 2. Date Filter
+                    if (filterDate) {
+                        meetingInstances = meetingInstances.filter(m => m.date === filterDate);
+                    }
+                    
+                    if (meetingInstances.length === 0) return;
+
+                    // Gather all task IDs associated with these meeting instances
+                    const instanceIds = meetingInstances.map(m => m.id);
+                    const relevantTasks = tasks.filter(t => instanceIds.includes(t.meetingId));
+
+                    if (relevantTasks.length === 0) return;
 
                     const tasksByOwner = {};
-                    meetingTasks.forEach(task => {
+                    let hasVisibleTasks = false;
+
+                    relevantTasks.forEach(task => {
+                        // 3. Owner Filter
+                        if (filterOwner !== 'all') {
+                             const matchesId = task.assignee === filterOwner;
+                             const matchesEmail = (attendees.find(u => u.id === filterOwner)?.email === task.assignee);
+                             if (!matchesId && !matchesEmail) return;
+                        }
+
+                        // 4. Status Filter
+                        const status = task.status || (task.done ? 'completed' : 'pending');
+                        if (filterStatus !== 'all' && status !== filterStatus) return;
+
+                        hasVisibleTasks = true;
+
                         const ownerId = task.assignee || 'Unassigned';
                         if (!tasksByOwner[ownerId]) {
                             const owner = attendees.find(u => (u.email === ownerId || u.id === ownerId)) || { name: 'Unknown', email: ownerId };
@@ -420,7 +515,7 @@ END $$;
                                 completedCount: 0
                             };
                         }
-                        const status = task.status || (task.done ? 'completed' : 'pending');
+                        
                         tasksByOwner[ownerId].tasks.push(task);
                         if (status === 'completed') {
                             tasksByOwner[ownerId].completedCount++;
@@ -429,61 +524,134 @@ END $$;
                         }
                     });
 
-                    data.push({
-                        meeting,
-                        owners: Object.values(tasksByOwner)
-                    });
+                    if (hasVisibleTasks) {
+                         data.push({
+                            title,
+                            owners: Object.values(tasksByOwner)
+                        });
+                    }
                 });
                 return data;
-            }, [meetings, tasks, attendees]);
+            }, [meetingsByTitle, tasks, attendees, filterOwner, filterStatus, filterDate]);
 
-            if (reportData.length === 0) {
-                return <div className="text-center py-12 text-gray-500">No tasks data available for reports.</div>;
-            }
+            // Clear Filters Handler
+            const clearFilters = () => {
+                setFilterOwner('all');
+                setFilterStatus('all');
+                setFilterDate('');
+            };
 
             return (
-                <div className="space-y-8">
-                    {reportData.map(({ meeting, owners }) => (
-                        <div key={meeting.id} className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-                            <div className="p-4 bg-gray-50 border-b border-gray-200 flex justify-between items-center">
-                                <h3 className="font-bold text-gray-800 flex items-center">
-                                    <Icon name="Calendar" className="w-4 h-4 mr-2 text-indigo-600" />
-                                    {meeting.title}
-                                </h3>
-                                <span className="text-xs text-gray-500">{meeting.date}</span>
-                            </div>
-                            <div className="divide-y divide-gray-100">
-                                {owners.map(({ owner, tasks, pendingCount, completedCount }) => (
-                                    <div key={owner.email || owner.id} className="p-4">
-                                        <div className="flex items-center justify-between mb-3">
-                                            <div className="flex items-center space-x-2">
-                                                <UserAvatar user={owner} size="sm" />
-                                                <span className="text-sm font-semibold text-gray-800">{owner.name || owner.email}</span>
-                                            </div>
-                                            <div className="flex space-x-2 text-xs">
-                                                <span className="px-2 py-1 bg-yellow-100 text-yellow-800 rounded-full font-medium">{pendingCount} Pending</span>
-                                                <span className="px-2 py-1 bg-green-100 text-green-800 rounded-full font-medium">{completedCount} Completed</span>
-                                            </div>
-                                        </div>
-                                        <div className="pl-10 space-y-2">
-                                            {tasks.map(task => (
-                                                <div key={task.id} className="text-sm flex items-start justify-between border-l-2 border-gray-100 pl-3 py-1">
-                                                    <span className={`${(task.status || (task.done?'completed':'pending')) === 'completed' ? 'line-through text-gray-400' : 'text-gray-700'}`}>
-                                                        {task.text}
-                                                    </span>
-                                                    {task.obstacles && (
-                                                        <span className="ml-2 text-xs text-orange-600 bg-orange-50 px-2 py-0.5 rounded border border-orange-100 max-w-[200px] truncate" title={task.obstacles}>
-                                                            Obstacle: {task.obstacles}
-                                                        </span>
-                                                    )}
-                                                </div>
-                                            ))}
-                                        </div>
-                                    </div>
+                <div className="space-y-6">
+                    {/* FILTER BAR */}
+                    <div className="bg-white p-4 rounded-xl border border-gray-200 flex flex-wrap gap-4 items-end shadow-sm">
+                        <div className="flex flex-col gap-1 w-full sm:w-auto flex-1 min-w-[150px]">
+                            <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Owner</label>
+                            <select 
+                                value={filterOwner} 
+                                onChange={(e) => setFilterOwner(e.target.value)}
+                                className="text-sm border-gray-300 rounded-md shadow-sm border p-2 w-full focus:ring-2 focus:ring-indigo-500 outline-none"
+                            >
+                                <option value="all">All Owners</option>
+                                {uniqueOwners.map(u => (
+                                    <option key={u.id || u.email} value={u.id || u.email}>{u.name || u.email}</option>
                                 ))}
-                            </div>
+                            </select>
                         </div>
-                    ))}
+
+                        <div className="flex flex-col gap-1 w-full sm:w-auto w-[120px]">
+                            <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Status</label>
+                            <select 
+                                value={filterStatus} 
+                                onChange={(e) => setFilterStatus(e.target.value)}
+                                className="text-sm border-gray-300 rounded-md shadow-sm border p-2 w-full focus:ring-2 focus:ring-indigo-500 outline-none"
+                            >
+                                <option value="all">All</option>
+                                <option value="pending">Pending</option>
+                                <option value="completed">Completed</option>
+                            </select>
+                        </div>
+
+                         <div className="flex flex-col gap-1 w-full sm:w-auto">
+                            <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Date</label>
+                            <input 
+                                type="date"
+                                value={filterDate}
+                                onChange={(e) => setFilterDate(e.target.value)}
+                                className="text-sm border-gray-300 rounded-md shadow-sm border p-2 focus:ring-2 focus:ring-indigo-500 outline-none"
+                            />
+                        </div>
+
+                        <button 
+                            onClick={clearFilters}
+                            className="text-sm text-red-600 hover:bg-red-50 px-3 py-2 rounded-md transition-colors flex items-center mb-[1px]"
+                            title="Reset all filters"
+                        >
+                            <Icon name="XCircle" className="w-4 h-4 mr-1" />
+                            Clear
+                        </button>
+                    </div>
+
+                    {/* REPORT LIST */}
+                    {reportData.length === 0 ? (
+                        <div className="text-center py-12 text-gray-500 bg-white rounded-xl border border-dashed border-gray-300">
+                            No tasks found matching your filters.
+                        </div>
+                    ) : (
+                        <div className="space-y-8">
+                            {reportData.map(({ title, owners }) => (
+                                <div key={title} className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+                                    <div className="p-4 bg-gray-50 border-b border-gray-200 flex justify-between items-center">
+                                        <h3 className="font-bold text-gray-800 flex items-center">
+                                            <Icon name="Calendar" className="w-4 h-4 mr-2 text-indigo-600" />
+                                            {title}
+                                        </h3>
+                                        {filterDate ? <span className="text-xs text-gray-500">{filterDate}</span> : <span className="text-xs text-gray-500">Aggregate Report</span>}
+                                    </div>
+                                    <div className="divide-y divide-gray-100">
+                                        {owners.map(({ owner, tasks, pendingCount, completedCount }) => (
+                                            <div key={owner.email || owner.id} className="p-4">
+                                                <div className="flex items-center justify-between mb-3">
+                                                    <div className="flex items-center space-x-2">
+                                                        <UserAvatar user={owner} size="sm" />
+                                                        <span className="text-sm font-semibold text-gray-800">{owner.name || owner.email}</span>
+                                                    </div>
+                                                    <div className="flex space-x-2 text-xs">
+                                                        <span className="px-2 py-1 bg-yellow-100 text-yellow-800 rounded-full font-medium">{pendingCount} Pending</span>
+                                                        <span className="px-2 py-1 bg-green-100 text-green-800 rounded-full font-medium">{completedCount} Completed</span>
+                                                    </div>
+                                                </div>
+                                                <div className="pl-10 space-y-2">
+                                                    {tasks.map(task => {
+                                                        const taskMeeting = meetings.find(m => m.id === task.meetingId);
+                                                        const dateLabel = taskMeeting ? taskMeeting.date : (task.start_date || 'No Date');
+                                                        
+                                                        return (
+                                                            <div key={task.id} className="text-sm flex flex-col border-l-2 border-gray-100 pl-3 py-1">
+                                                                 <div className="flex justify-between items-start gap-2">
+                                                                    <span className={`flex-1 break-words ${(task.status || (task.done?'completed':'pending')) === 'completed' ? 'line-through text-gray-400' : 'text-gray-700'}`}>
+                                                                        {task.text}
+                                                                    </span>
+                                                                    <span className="shrink-0 text-[10px] font-mono text-gray-400 bg-gray-50 px-1.5 py-0.5 rounded">
+                                                                        {dateLabel}
+                                                                    </span>
+                                                                </div>
+                                                                {task.obstacles && (
+                                                                    <span className="ml-0 mt-1 w-fit text-xs text-orange-600 bg-orange-50 px-2 py-0.5 rounded border border-orange-100 max-w-full truncate" title={task.obstacles}>
+                                                                        Obstacle: {task.obstacles}
+                                                                    </span>
+                                                                )}
+                                                            </div>
+                                                        );
+                                                    })}
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    )}
                 </div>
             );
         };
@@ -673,11 +841,12 @@ END $$;
                                                                 <UserAvatar user={o} size="sm" />
                                                                 <div className="truncate flex-1">
                                                                     <p className="text-sm font-semibold text-gray-900 truncate">{o.name}</p>
-                                                                    <p className="text-xs text-gray-500 truncate">{o.email}</p>
+                                                                    <div className="flex items-center gap-1">
+                                                                        <p className="text-xs text-gray-500 truncate">{o.email}</p>
+                                                                        {o.system_role === 'admin' && <Icon name="Shield" className="w-3 h-3 text-blue-500" title="Admin User"/>}
+                                                                    </div>
                                                                 </div>
                                                             </div>
-                                                            {/* Only show edit controls if they belong to this team or we are in Managers view */}
-                                                            {/* Actually, if they are Manager owners here, we don't edit them here, we edit them in Managers card */}
                                                             {o.team === team && (
                                                                 <div className="flex gap-1 w-full">
                                                                     <select 
@@ -720,7 +889,10 @@ END $$;
                                                                 <UserAvatar user={m} size="xs" />
                                                                 <div className="truncate flex-1">
                                                                     <p className="text-sm text-gray-800 truncate">{m.name}</p>
-                                                                    <p className="text-[10px] text-gray-500 truncate">{m.email}</p>
+                                                                    <div className="flex items-center gap-1">
+                                                                        <p className="text-[10px] text-gray-500 truncate">{m.email}</p>
+                                                                        {m.system_role === 'admin' && <Icon name="Shield" className="w-3 h-3 text-blue-500" title="Admin User"/>}
+                                                                    </div>
                                                                 </div>
                                                                 <button onClick={() => onRemoveMember(m.email)} className="text-gray-400 hover:text-red-500 p-1" title="Remove">
                                                                     <Icon name="Trash2" className="w-3 h-3" />
@@ -866,6 +1038,23 @@ END $$;
                         </form>
                     </div>
 
+                    {meetingId && meetingId !== 'standalone' && (
+                        <div className="px-6 py-2 flex justify-end">
+                             <button 
+                                className="text-xs flex items-center text-indigo-600 hover:text-indigo-800 font-medium"
+                                onClick={() => {
+                                    // Trigger doc import (requires logic in parent)
+                                    // For now, this button is just a placeholder or needs to be hooked up
+                                    // if passed down.
+                                    // Actually, import logic is better placed in meeting details view.
+                                }}
+                             >
+                                <Icon name="Download" className="w-3 h-3 mr-1" />
+                                Import from Doc
+                            </button>
+                        </div>
+                    )}
+
                     <div className="flex-1 overflow-y-auto p-6 space-y-6 bg-gray-50">
                         <div className="space-y-3">
                             <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">To Do</h3>
@@ -906,15 +1095,37 @@ END $$;
             );
         };
 
-        const LoginScreen = ({ onLogin, onEmailLogin }) => {
+        const LoginScreen = ({ onLogin, onEmailLogin, onPasswordLogin, onSignUp, onPasswordReset }) => {
             const [email, setEmail] = useState('');
-            const [sent, setSent] = useState(false);
+            const [password, setPassword] = useState('');
+            const [authMethod, setAuthMethod] = useState('password'); // 'password' | 'magic'
+            const [isSignUp, setIsSignUp] = useState(false); // Toggle Sign In / Sign Up
+            const [isForgot, setIsForgot] = useState(false); // Toggle Forgot Password
+            const [magicSent, setMagicSent] = useState(false);
 
             const handleMagicLink = (e) => {
                 e.preventDefault();
                 if(!email) return;
                 onEmailLogin(email);
-                setSent(true);
+                setMagicSent(true);
+            };
+
+            const handlePasswordAction = (e) => {
+                e.preventDefault();
+                if (!email) return;
+                
+                if (isForgot) {
+                    onPasswordReset(email);
+                    setIsForgot(false); 
+                    // ideally show notification
+                    return;
+                }
+
+                if (isSignUp) {
+                    onSignUp(email, password);
+                } else {
+                    onPasswordLogin(email, password);
+                }
             };
 
             return (
@@ -924,7 +1135,7 @@ END $$;
                             <Icon name="Calendar" className="w-8 h-8 text-indigo-600" />
                         </div>
                         <h1 className="text-2xl font-bold text-gray-900 mb-2">Welcome to MeetingMate</h1>
-                        <p className="text-gray-500 mb-8">Collaborate on meeting tasks and sync with your team.</p>
+                        <p className="text-gray-500 mb-6">Collaborate on meeting tasks and sync with your team.</p>
                         
                         <button onClick={onLogin} className="w-full flex items-center justify-center space-x-3 bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 font-medium py-3 px-4 rounded-lg transition-colors mb-6">
                             <Icon name="Google" className="w-5 h-5" />
@@ -936,24 +1147,89 @@ END $$;
                             <div className="relative flex justify-center text-sm"><span className="px-2 bg-white text-gray-500">Or sign in with email</span></div>
                         </div>
 
-                        {!sent ? (
-                            <form onSubmit={handleMagicLink} className="mb-6 space-y-3">
-                                <input 
-                                    type="email" 
-                                    placeholder="name@example.com" 
-                                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:outline-none"
-                                    value={email}
-                                    onChange={(e) => setEmail(e.target.value)}
-                                />
-                                <button type="submit" className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-medium py-2 px-4 rounded-lg transition-colors flex items-center justify-center space-x-2">
-                                    <Icon name="Mail" className="w-4 h-4" />
-                                    <span>Send Magic Link</span>
-                                </button>
-                            </form>
+                        {/* Auth Method Toggles */}
+                        <div className="flex justify-center space-x-4 mb-6 text-sm">
+                            <button 
+                                onClick={() => setAuthMethod('password')}
+                                className={`pb-1 border-b-2 transition-colors ${authMethod === 'password' ? 'border-indigo-600 text-indigo-600 font-medium' : 'border-transparent text-gray-500 hover:text-gray-700'}`}
+                            >
+                                Password
+                            </button>
+                            <button 
+                                onClick={() => setAuthMethod('magic')}
+                                className={`pb-1 border-b-2 transition-colors ${authMethod === 'magic' ? 'border-indigo-600 text-indigo-600 font-medium' : 'border-transparent text-gray-500 hover:text-gray-700'}`}
+                            >
+                                Magic Link
+                            </button>
+                        </div>
+
+                        {authMethod === 'magic' ? (
+                            !magicSent ? (
+                                <form onSubmit={handleMagicLink} className="space-y-3 text-left">
+                                    <div>
+                                        <label className="text-xs font-medium text-gray-700">Email Address</label>
+                                        <input 
+                                            type="email" 
+                                            placeholder="name@example.com" 
+                                            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:outline-none mt-1"
+                                            value={email}
+                                            onChange={(e) => setEmail(e.target.value)}
+                                            required
+                                        />
+                                    </div>
+                                    <button type="submit" className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-medium py-2 px-4 rounded-lg transition-colors flex items-center justify-center space-x-2">
+                                        <Icon name="Mail" className="w-4 h-4" />
+                                        <span>Send Magic Link</span>
+                                    </button>
+                                </form>
+                            ) : (
+                                <div className="mb-6 bg-green-50 text-green-700 p-3 rounded-lg text-sm">
+                                    Check your email for the login link!
+                                </div>
+                            )
                         ) : (
-                            <div className="mb-6 bg-green-50 text-green-700 p-3 rounded-lg text-sm">
-                                Check your email for the login link!
-                            </div>
+                            <form onSubmit={handlePasswordAction} className="space-y-3 text-left">
+                                <div>
+                                    <label className="text-xs font-medium text-gray-700">Email Address</label>
+                                    <input 
+                                        type="email" 
+                                        placeholder="name@example.com" 
+                                        className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:outline-none mt-1"
+                                        value={email}
+                                        onChange={(e) => setEmail(e.target.value)}
+                                        required
+                                    />
+                                </div>
+                                
+                                {!isForgot && (
+                                    <div>
+                                        <label className="text-xs font-medium text-gray-700">Password</label>
+                                        <input 
+                                            type="password" 
+                                            placeholder="••••••••" 
+                                            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:outline-none mt-1"
+                                            value={password}
+                                            onChange={(e) => setPassword(e.target.value)}
+                                            required
+                                        />
+                                    </div>
+                                )}
+
+                                <button type="submit" className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-medium py-2 px-4 rounded-lg transition-colors flex items-center justify-center space-x-2">
+                                    {isForgot ? 'Send Reset Link' : (isSignUp ? 'Create Account' : 'Sign In')}
+                                </button>
+
+                                <div className="flex justify-between text-xs mt-4">
+                                    {!isForgot && (
+                                        <button type="button" onClick={() => setIsSignUp(!isSignUp)} className="text-indigo-600 hover:underline">
+                                            {isSignUp ? 'Already have an account? Sign In' : 'Need an account? Sign Up'}
+                                        </button>
+                                    )}
+                                    <button type="button" onClick={() => setIsForgot(!isForgot)} className="text-gray-500 hover:text-gray-700">
+                                        {isForgot ? 'Back to Login' : 'Forgot Password?'}
+                                    </button>
+                                </div>
+                            </form>
                         )}
                         
                         <div className="mt-6 p-4 bg-yellow-50 border border-yellow-200 rounded-lg text-left">
@@ -967,10 +1243,46 @@ END $$;
                             <code className="block bg-yellow-100 p-1.5 rounded text-[10px] break-all font-mono mb-2">
                                 {window.location.href}
                             </code>
-                            <p className="text-xs text-yellow-700">
-                                Magic Link (Email) works, but <strong>Calendar Sync requires Google Login</strong>.
-                            </p>
                         </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const PasswordResetScreen = ({ onReset }) => {
+            const [newPassword, setNewPassword] = useState('');
+            const [message, setMessage] = useState('');
+
+            const handleReset = (e) => {
+                e.preventDefault();
+                onReset(newPassword);
+                setMessage('Password updated! Redirecting...');
+            };
+
+            return (
+                <div className="h-full flex items-center justify-center bg-gray-50 p-4">
+                    <div className="bg-white p-8 rounded-2xl shadow-xl max-w-md w-full text-center">
+                        <div className="bg-indigo-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-6">
+                            <Icon name="Key" className="w-8 h-8 text-indigo-600" />
+                        </div>
+                        <h1 className="text-2xl font-bold text-gray-900 mb-2">Set New Password</h1>
+                        <p className="text-gray-500 mb-6">Enter your new password below.</p>
+                        
+                        <form onSubmit={handleReset} className="space-y-4">
+                            <input 
+                                type="password" 
+                                placeholder="New Password" 
+                                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                                value={newPassword}
+                                onChange={(e) => setNewPassword(e.target.value)}
+                                required
+                                minLength="6"
+                            />
+                            <button type="submit" className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-medium py-2 px-4 rounded-lg transition-colors">
+                                Update Password
+                            </button>
+                        </form>
+                        {message && <p className="mt-4 text-green-600 text-sm font-medium">{message}</p>}
                     </div>
                 </div>
             );
@@ -1025,8 +1337,13 @@ END $$;
                     }
                 });
 
-                const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+                const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
                     setSession(session);
+                    
+                    if (event === 'PASSWORD_RECOVERY') {
+                        setView('reset_password');
+                    }
+                    
                     if (session) {
                         const role = getSystemRole(session.user.email);
                         setCurrentUser({
@@ -1054,7 +1371,7 @@ END $$;
                 const { error } = await supabase.auth.signInWithOAuth({ 
                     provider: 'google', 
                     options: { 
-                        redirectTo: window.location.href,
+                        redirectTo: window.location.href, // This might need to be specific for Vercel
                         // Request Calendar Access AND Event editing (for description sync)
                         scopes: 'https://www.googleapis.com/auth/calendar.readonly' 
                     } 
@@ -1068,6 +1385,44 @@ END $$;
                     options: { emailRedirectTo: window.location.href }
                 });
                 if (error) alert(error.message);
+            };
+            
+            const handlePasswordLogin = async (email, password) => {
+                const { error } = await supabase.auth.signInWithPassword({ email, password });
+                if (error) alert(error.message);
+            };
+
+            const handleSignUp = async (email, password) => {
+                const { error } = await supabase.auth.signUp({
+                    email,
+                    password,
+                    options: {
+                        data: { full_name: email.split('@')[0] } 
+                    }
+                });
+                if (error) {
+                    alert(error.message);
+                } else {
+                    alert("Sign up successful! Please check your email for confirmation if required.");
+                }
+            };
+
+            const handlePasswordReset = async (email) => {
+                const { error } = await supabase.auth.resetPasswordForEmail(email, {
+                    redirectTo: window.location.href, // Redirect back to app
+                });
+                if (error) alert(error.message);
+                else alert("Password reset email sent!");
+            };
+            
+            const handleUpdatePassword = async (newPassword) => {
+                const { error } = await supabase.auth.updateUser({ password: newPassword });
+                if (error) alert(error.message);
+                else {
+                    alert("Password updated successfully!");
+                    setView('dashboard');
+                    fetchData();
+                }
             };
 
             const handleLogout = async () => {
@@ -1224,7 +1579,6 @@ END $$;
                         })) : [];
                         
                         // Force include current user (the owner of the calendar) in participants
-                        // We must ensure the current user is added so they can SEE the meeting later
                         const userInAttendees = attendees.find(a => a.email && a.email.toLowerCase() === currentUser.email.toLowerCase());
                         if (!userInAttendees) {
                             attendees.push({
@@ -1242,7 +1596,8 @@ END $$;
                             if (gDoc) gDocLink = gDoc.fileUrl;
                         }
 
-                        // Use upsert to merge participants if possible, but for now replace to ensure sync source of truth
+                        // Upsert Meeting (This ensures new participants merge in a real DB, but here we replace to keep sync simple)
+                        // In a real production app we would read existing participants and merge. Here we overwrite with GCal source of truth.
                         await supabase.from('meetings').upsert({
                             id: mId,
                             title: event.summary || '(No Title)',
@@ -1256,6 +1611,8 @@ END $$;
                             platform: 'Google Calendar',
                             google_doc_link: gDocLink
                         });
+                        
+                        // Note: Notes syncing removed as requested
                     }
                     
                     await fetchData();
@@ -1335,14 +1692,14 @@ END $$;
             };
 
             // --- STANDALONE TASK ADDITION ---
-            const handleAddStandaloneTask = (text) => {
+            const handleAddStandaloneTask = (text, assigneeId) => {
                 if (!text.trim()) return;
                 const newId = `t_${Date.now()}`;
                 const newTask = {
                     id: newId,
                     meeting_id: 'standalone',
                     text: text,
-                    assignee: currentUser.id, // Assign to self
+                    assignee: assigneeId || currentUser.id, // Assign to selected or self
                     status: 'pending',
                     start_date: getTodayISO(),
                     end_date: getTodayISO()
@@ -1358,6 +1715,24 @@ END $$;
                 }
                 setShowQuickAdd(false);
             };
+
+            // Check if current user is a manager or admin
+            const isManager = useMemo(() => {
+                if (!currentUser) return false;
+                if (currentUser.system_role === 'admin') return true;
+                
+                // Check team_members table for role 'Owner' or managed_teams
+                const memberRecord = teamMembers.find(m => 
+                    m.email && m.email.toLowerCase() === (currentUser.email || '').toLowerCase()
+                );
+                
+                if (memberRecord) {
+                    if (memberRecord.role === 'Owner') return true;
+                    if (memberRecord.managed_teams && memberRecord.managed_teams.length > 0) return true;
+                }
+                
+                return false;
+            }, [currentUser, teamMembers]);
 
             // --- MEETING LIST LOGIC (All meetings, sorted by date) ---
             const sortedMeetings = useMemo(() => {
@@ -1391,8 +1766,10 @@ END $$;
                     });
                 });
 
-                // Filter by Selected Date - Only show selected date meetings
-                const dateFiltered = userMeetings.filter(m => m.date === selectedDate);
+                // Filter by Selected Date IF selected (and if it's not empty)
+                const dateFiltered = selectedDate 
+                    ? userMeetings.filter(m => m.date === selectedDate)
+                    : userMeetings;
                 
                 // Sort Descending (Newest first)
                 return dateFiltered.sort((a, b) => {
@@ -1406,7 +1783,12 @@ END $$;
             const filteredTasks = useMemo(() => {
                 // First filter by SCOPE (Me vs My Team)
                 let scopeFiltered = [];
-                if (taskScope === 'me' || currentUser?.system_role !== 'admin') { // Force 'me' for regular users
+                
+                // If not manager, force 'me' scope. If manager, respect taskScope.
+                // Note: isManager is calculated above.
+                const effectiveScope = isManager ? taskScope : 'me';
+
+                if (effectiveScope === 'me') {
                     const myEmail = (currentUser?.email || '').toLowerCase().trim();
                     const myId = currentUser?.id;
 
@@ -1414,22 +1796,30 @@ END $$;
                         const assignee = (t.assignee || '').toLowerCase().trim();
                         return assignee === myId || assignee === myEmail;
                     }); 
-                } else if (taskScope === 'team') {
+                } else if (effectiveScope === 'team') {
                     // Find teams user manages
                     const myManagedTeams = [];
-                    const userEmail = currentUser?.email || session?.user?.email;
+                    const userEmail = (currentUser?.email || '').toLowerCase();
                     
-                    const meInTeam = teamMembers.find(tm => tm.email === userEmail);
+                    const meInTeam = teamMembers.find(tm => tm.email && tm.email.toLowerCase() === userEmail);
                     
                     if (meInTeam) {
-                        const teamsOwned = teamMembers
-                            .filter(tm => tm.email === userEmail && tm.role === 'Owner')
-                            .map(tm => tm.team);
-                        myManagedTeams.push(...teamsOwned);
+                        // Direct ownership of a team
+                        // Note: If role is Owner, they manage their own team (meInTeam.team)
+                        if (meInTeam.role === 'Owner' && meInTeam.team) {
+                            myManagedTeams.push(meInTeam.team);
+                        }
                         
-                        if (meInTeam.team === 'Managers' && meInTeam.managed_teams) {
+                        // Delegated management
+                        if (meInTeam.managed_teams && Array.isArray(meInTeam.managed_teams)) {
                             myManagedTeams.push(...meInTeam.managed_teams);
                         }
+                    }
+                    
+                    // If admin, maybe show all teams? Or just let them see based on above?
+                    // Let's refine `myManagedTeams` for Admin.
+                    if (currentUser?.system_role === 'admin') {
+                         myManagedTeams.push(...DEPARTMENTS);
                     }
 
                     // Get all members of these teams
@@ -1437,6 +1827,7 @@ END $$;
                         .filter(tm => myManagedTeams.includes(tm.team))
                         .map(tm => tm.email);
                         
+                    // Include tasks assigned to these emails
                     scopeFiltered = tasks.filter(t => teamMemberEmails.includes(t.assignee));
                 }
 
@@ -1445,7 +1836,7 @@ END $$;
                 if (taskFilter === 'completed') return scopeFiltered.filter(t => (t.status === 'completed' || t.done));
                 if (taskFilter === 'pending') return scopeFiltered.filter(t => (t.status !== 'completed' && !t.done));
                 return scopeFiltered;
-            }, [tasks, taskFilter, taskScope, currentUser, teamMembers, session]);
+            }, [tasks, taskFilter, taskScope, currentUser, teamMembers, session, isManager]);
 
             // Combine participants for robust assignment
             const allPossibleAssignees = useMemo(() => {
@@ -1464,7 +1855,17 @@ END $$;
 
             if (loading) return null;
 
-            if (!session) return <LoginScreen onLogin={handleGoogleLogin} onEmailLogin={handleEmailLogin} />;
+            if (!session) {
+                if (view === 'reset_password') {
+                     return <PasswordResetScreen onReset={handleUpdatePassword} />;
+                }
+                return <LoginScreen onLogin={handleGoogleLogin} onEmailLogin={handleEmailLogin} onPasswordLogin={handlePasswordLogin} onSignUp={handleSignUp} onPasswordReset={handlePasswordReset} />;
+            }
+            // Edge case: if session exists but we want to show reset screen (e.g. clicked link while logged in? Unlikely, supabase clears session usually)
+            // But if onAuthStateChange triggered PASSWORD_RECOVERY, view is set to reset_password
+             if (view === 'reset_password') {
+                 return <PasswordResetScreen onReset={handleUpdatePassword} />;
+            }
 
             // --- Dashboard View ---
             if (view === 'dashboard') {
@@ -1488,38 +1889,48 @@ END $$;
                                             {dashboardViewMode === 'meetings' ? 'My Meetings' : (dashboardViewMode === 'tasks' ? 'My Tasks' : (dashboardViewMode === 'team' ? 'Team' : 'Reports'))}
                                         </h2>
                                         <p className="text-gray-500 text-sm mt-1">
-                                            {currentUser.name} {dashboardViewMode === 'meetings' && `• ${new Date(selectedDate).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })}`}
+                                            {currentUser.name}
                                         </p>
                                     </div>
                                     <div className="flex flex-col sm:flex-row items-center gap-3 w-full sm:w-auto">
                                         <div className="flex items-center space-x-1 bg-white p-1 rounded-lg border border-gray-200 shadow-sm w-full sm:w-auto">
                                              <button onClick={() => setDashboardViewMode('meetings')} className={`flex-1 sm:flex-none px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${dashboardViewMode === 'meetings' ? 'bg-indigo-100 text-indigo-700' : 'text-gray-600 hover:bg-gray-50'}`}>Meetings</button>
                                              <button onClick={() => setDashboardViewMode('tasks')} className={`flex-1 sm:flex-none px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${dashboardViewMode === 'tasks' ? 'bg-indigo-100 text-indigo-700' : 'text-gray-600 hover:bg-gray-50'}`}>Tasks</button>
-                                             {currentUser.system_role === 'admin' && (
-                                                <>
+                                             
+                                                
                                                     <button onClick={() => setDashboardViewMode('team')} className={`flex-1 sm:flex-none px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${dashboardViewMode === 'team' ? 'bg-indigo-100 text-indigo-700' : 'text-gray-600 hover:bg-gray-50'}`}>Team</button>
                                                     <button onClick={() => setDashboardViewMode('reports')} className={`flex-1 sm:flex-none px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${dashboardViewMode === 'reports' ? 'bg-indigo-100 text-indigo-700' : 'text-gray-600 hover:bg-gray-50'}`}>Reports</button>
-                                                </>
-                                             )}
+                                                
+                                            
                                         </div>
                                         
-                                        {/* Date Picker - Only for Meetings View */}
+                                        {/* Date Picker - With Show All Toggle */}
                                         {dashboardViewMode === 'meetings' && (
-                                            <div className="relative w-full sm:w-auto">
-                                                <input
-                                                    type="date"
-                                                    value={selectedDate}
-                                                    onChange={(e) => setSelectedDate(e.target.value)}
-                                                    className="w-full pl-10 pr-4 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 shadow-sm"
-                                                />
-                                                <Icon name="Calendar" className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-4 h-4 pointer-events-none" />
+                                            <div className="flex items-center gap-2">
+                                                <div className="relative w-full sm:w-auto">
+                                                    <input
+                                                        type="date"
+                                                        value={selectedDate}
+                                                        onChange={(e) => setSelectedDate(e.target.value)}
+                                                        className="w-full pl-10 pr-4 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 shadow-sm"
+                                                    />
+                                                    <Icon name="Calendar" className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-4 h-4 pointer-events-none" />
+                                                </div>
+                                                {selectedDate && (
+                                                    <button 
+                                                        onClick={() => setSelectedDate('')}
+                                                        className="text-xs text-indigo-600 hover:text-indigo-800 underline whitespace-nowrap"
+                                                    >
+                                                        Show All
+                                                    </button>
+                                                )}
                                             </div>
                                         )}
 
                                         {dashboardViewMode === 'tasks' && (
                                             <div className="flex gap-2 w-full sm:w-auto items-center">
-                                                {/* Only show scope toggle if admin/manager */}
-                                                {currentUser.system_role === 'admin' && (
+                                                {/* Only show scope toggle if manager */}
+                                                {isManager && (
                                                     <div className="flex items-center bg-white border border-gray-200 rounded-lg p-0.5">
                                                         <button onClick={() => setTaskScope('me')} className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${taskScope === 'me' ? 'bg-gray-100 text-gray-900' : 'text-gray-500'}`}>Me</button>
                                                         <button onClick={() => setTaskScope('team')} className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${taskScope === 'team' ? 'bg-gray-100 text-gray-900' : 'text-gray-500'}`}>My Team</button>
@@ -1564,7 +1975,7 @@ END $$;
                                             </div>
                                         ) : (
                                             <div className="text-center py-20 bg-white rounded-xl border border-dashed">
-                                                <p className="text-gray-500">No meetings found for {selectedDate}.</p>
+                                                <p className="text-gray-500">No meetings found {selectedDate ? `for ${selectedDate}` : ''}.</p>
                                                 {dbStatus === 'empty' && <p className="text-sm text-indigo-500 mt-2">Click "Sync" to load from Google.</p>}
                                             </div>
                                         )}
@@ -1574,9 +1985,19 @@ END $$;
                                         {/* QUICK ADD TASK FORM */}
                                         {showQuickAdd && (
                                             <div className="bg-white border border-indigo-100 p-4 rounded-lg shadow-sm mb-4 animate-in fade-in slide-in-from-top-2">
-                                                <form onSubmit={(e) => { e.preventDefault(); handleAddStandaloneTask(e.target.elements.taskText.value); e.target.reset(); }} className="flex gap-2">
+                                                <form onSubmit={(e) => { 
+                                                    e.preventDefault(); 
+                                                    handleAddStandaloneTask(e.target.elements.taskText.value, e.target.elements.taskAssignee.value); 
+                                                    e.target.reset(); 
+                                                }} className="flex flex-col sm:flex-row gap-2">
                                                     <input name="taskText" type="text" placeholder="What do you need to do?" className="flex-1 border border-gray-300 rounded px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 outline-none" autoFocus />
-                                                    <button type="submit" className="bg-indigo-600 text-white px-4 py-2 rounded text-sm font-medium">Add</button>
+                                                    <select name="taskAssignee" className="border border-gray-300 rounded px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white" defaultValue={currentUser?.id}>
+                                                        <option value={currentUser?.id}>Me</option>
+                                                        {allPossibleAssignees.filter(u => (u.id || u.email) !== currentUser?.id).map(u => (
+                                                            <option key={u.id || u.email} value={u.id || u.email}>{u.name || u.email}</option>
+                                                        ))}
+                                                    </select>
+                                                    <button type="submit" className="bg-indigo-600 text-white px-4 py-2 rounded text-sm font-medium whitespace-nowrap">Add Task</button>
                                                 </form>
                                             </div>
                                         )}
