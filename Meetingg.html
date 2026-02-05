@@ -884,6 +884,27 @@ create table if not exists pending_emails (
                 }
             };
 
+            const handleDeleteAllTasks = async () => {
+                if (!confirm("⚠️ DANGER ZONE ⚠️\n\nAre you sure you want to delete ALL tasks in the system? This cannot be undone.")) return;
+                
+                // Clear local state
+                setTasks([]);
+
+                if (dbStatus === 'connected' && client) {
+                    // Supabase requires a filter for delete. using id.neq.0 deletes everything if ids are strings/uuids usually, 
+                    // but since ids are strings here ("t_..."), we can try a broad filter. 
+                    // Actually, Supabase JS requires a filter. `neq('id', 'placeholder')` usually works.
+                    const { error } = await client.from('tasks').delete().neq('id', 'placeholder');
+                    if (error) {
+                        console.error(error);
+                        alert("Failed to delete from database: " + error.message);
+                        fetchData(client); // restore
+                    } else {
+                        alert("All tasks deleted successfully.");
+                    }
+                }
+            };
+
             const fetchData = async (sbClient = client) => {
                 if (!sbClient) return;
                 setDbStatus('connecting');
@@ -975,44 +996,102 @@ create table if not exists pending_emails (
                     const docData = await resp.json();
                     let tasksFound = [];
                     
-                    const findUserInText = (text) => {
+                    // Improved User Finding Logic
+                    const findUserInText = (text, richTextElements) => {
+                        // 1. Check for "Smart Chips" (Person mentions in Google Docs JSON)
+                        if (richTextElements && richTextElements.length > 0) {
+                            for (const el of richTextElements) {
+                                if (el.person && el.person.personProperties && el.person.personProperties.email) {
+                                    const email = el.person.personProperties.email;
+                                    const user = [...teamMembers, ...((meeting.participants || []).map(p => typeof p === 'string' ? {name:p, id:p} : p))].find(u => 
+                                        (u.email && u.email.toLowerCase() === email.toLowerCase())
+                                    );
+                                    if (user) return user.id || user.email;
+                                    // If email found in chip but not in our DB, return email as ID (best effort)
+                                    return email;
+                                }
+                            }
+                        }
+
+                        // 2. Fallback: Check text for name mentions at the start of the string
+                        // e.g., "Mohamed Halim Update..." or "@Mohamed Halim Update..."
                         const lowerText = text.toLowerCase();
                         const allUsers = [...teamMembers, ...((meeting.participants || []).map(p => typeof p === 'string' ? {name:p, id:p} : p))];
+                        
+                        // Sort users by name length descending to match longest names first
+                        allUsers.sort((a, b) => (b.name?.length || 0) - (a.name?.length || 0));
+
                         for (const u of allUsers) {
-                            if (u.name && lowerText.includes('@' + u.name.toLowerCase())) return u.id || u.email;
-                            if (u.name && lowerText.includes('(' + u.name.toLowerCase() + ')')) return u.id || u.email;
+                            if (u.name) {
+                                const name = u.name.toLowerCase();
+                                // Check if the text STARTS with the name (ignoring @ symbol)
+                                if (lowerText.startsWith(name) || lowerText.startsWith('@' + name)) {
+                                    return u.id || u.email;
+                                }
+                            }
                         }
-                        return currentUser.id;
+                        
+                        return currentUser.id; // Default to me if no one found
                     };
 
                     if (docData.body && docData.body.content) {
                         docData.body.content.forEach(elem => {
                             if (elem.paragraph) {
-                                let paraText = '';
-                                elem.paragraph.elements.forEach(pElem => { if (pElem.textRun) paraText += pElem.textRun.content; });
-                                paraText = paraText.trim();
-                                const isTaskKeyword = /^(?:-? ?\[ ?\]|TODO:|Task:)/i.test(paraText);
-                                const isBullet = !!elem.paragraph.bullet;
-                                if (isTaskKeyword || (isBullet && paraText.length > 3)) {
-                                    let cleanText = paraText.replace(/^(?:-? ?\[ ?\]|TODO:|Task:)\s*/i, '').trim();
-                                    if (cleanText) {
-                                        const assignedTo = findUserInText(cleanText);
-                                        tasksFound.push({ text: cleanText, assignee: assignedTo });
+                                // Only process bullets (checklists usually have bullet property)
+                                if (elem.paragraph.bullet) {
+                                    let paraText = '';
+                                    let richElements = [];
+
+                                    elem.paragraph.elements.forEach(pElem => {
+                                        if (pElem.textRun) {
+                                            paraText += pElem.textRun.content;
+                                        }
+                                        // Collect elements that might contain people chips
+                                        if (pElem.person) {
+                                            richElements.push(pElem);
+                                        }
+                                    });
+                                    
+                                    paraText = paraText.trim();
+                                    
+                                    // Remove checkbox glyphs if present in text (e.g. "[ ]", "[]")
+                                    // Google Docs API doesn't always send the glyph in textRun, but just in case
+                                    let cleanText = paraText.replace(/^\[\s*\]\s*/, '').trim();
+
+                                    // If text exists
+                                    if (cleanText.length > 1) {
+                                         const assignedTo = findUserInText(cleanText, richElements);
+                                         
+                                         // Clean the name from the start of the task text if found via text match
+                                         // This makes the task cleaner: "Mohamed Halim Update" -> "Update"
+                                         const assignedUser = [...teamMembers, ...((meeting.participants || []).map(p => typeof p === 'string' ? {name:p, id:p} : p))].find(u => (u.id === assignedTo || u.email === assignedTo));
+                                         
+                                         if (assignedUser && assignedUser.name) {
+                                             const nameRegex = new RegExp(`^@?${assignedUser.name}\\s*`, 'i');
+                                             cleanText = cleanText.replace(nameRegex, '').trim();
+                                         }
+                                         
+                                         if (cleanText) {
+                                            tasksFound.push({ text: cleanText, assignee: assignedTo });
+                                         }
                                     }
                                 }
                             }
                         });
                     }
-                    if (tasksFound.length === 0) { alert("No tasks found in Doc. \nTip: Use 'TODO:', 'Task:', or checkboxes."); } 
+
+                    if (tasksFound.length === 0) { alert("No checklist items found in Doc."); } 
                     else {
                         let createdCount = 0;
+                        const meetingDate = meeting.date || getTodayISO(); // Use Meeting Date
+                        
                         for (const task of tasksFound) {
                              const taskId = `t_doc_${Date.now()}_${Math.floor(Math.random()*10000)}`;
-                             setTasks(prev => [...prev, { id: taskId, meetingId: meeting.id, text: task.text, assignee: task.assignee, status: 'pending', start_date: getTodayISO(), end_date: getTodayISO() }]);
-                             if (client) { await client.from('tasks').insert({ id: taskId, meeting_id: meeting.id, text: task.text, assignee: task.assignee, status: 'pending', start_date: getTodayISO(), end_date: getTodayISO() }); }
+                             setTasks(prev => [...prev, { id: taskId, meetingId: meeting.id, text: task.text, assignee: task.assignee, status: 'pending', start_date: meetingDate, end_date: null }]); // Due date empty
+                             if (client) { await client.from('tasks').insert({ id: taskId, meeting_id: meeting.id, text: task.text, assignee: task.assignee, status: 'pending', start_date: meetingDate, end_date: null }); }
                              createdCount++;
                         }
-                        alert(`Imported ${createdCount} tasks!`);
+                        alert(`Imported ${createdCount} tasks from Doc!`);
                     }
                 } catch (e) { console.error(e); alert("Import failed: " + e.message); } finally { setIsSyncing(false); }
             };
@@ -1208,7 +1287,23 @@ create table if not exists pending_emails (
                                             <input type="date" value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)} className="w-full pl-10 pr-4 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 shadow-sm"/><Icon name="Calendar" className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-4 h-4 pointer-events-none" /></div>{selectedDate && (<button onClick={() => setSelectedDate('')} className="text-xs text-indigo-600 hover:text-indigo-800 underline whitespace-nowrap">Show All</button>)}</div>
                                     )}
                                     {dashboardViewMode === 'tasks' && (
-                                        <div className="flex gap-2 w-full sm:w-auto items-center">{isManager && (<div className="flex items-center bg-white border border-gray-200 rounded-lg p-0.5"><button onClick={() => setTaskScope('me')} className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${taskScope === 'me' ? 'bg-gray-100 text-gray-900' : 'text-gray-500'}`}>Me</button><button onClick={() => setTaskScope('team')} className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${taskScope === 'team' ? 'bg-gray-100 text-gray-900' : 'text-gray-500'}`}>My Team</button></div>)}<select value={taskFilter} onChange={(e) => setTaskFilter(e.target.value)} className="w-full pl-3 pr-8 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 shadow-sm"><option value="all">All Status</option><option value="pending">Pending</option><option value="completed">Completed</option></select><button onClick={() => setShowQuickAdd(!showQuickAdd)} className="bg-indigo-600 text-white p-2 rounded-lg hover:bg-indigo-700" title="Add Personal Task"><Icon name="Plus" className="w-4 h-4" /></button></div>
+                                        <div className="flex gap-2 w-full sm:w-auto items-center">
+                                            {isManager && (<div className="flex items-center bg-white border border-gray-200 rounded-lg p-0.5"><button onClick={() => setTaskScope('me')} className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${taskScope === 'me' ? 'bg-gray-100 text-gray-900' : 'text-gray-500'}`}>Me</button><button onClick={() => setTaskScope('team')} className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${taskScope === 'team' ? 'bg-gray-100 text-gray-900' : 'text-gray-500'}`}>My Team</button></div>)}
+                                            
+                                            {/* ADMIN DELETE BUTTON */}
+                                            {currentUser.system_role === 'admin' && (
+                                                <button 
+                                                    onClick={handleDeleteAllTasks} 
+                                                    className="bg-red-100 text-red-600 p-2 rounded-lg hover:bg-red-200 transition-colors" 
+                                                    title="Delete ALL Tasks (Admin Only)"
+                                                >
+                                                    <Icon name="Trash2" className="w-4 h-4" />
+                                                </button>
+                                            )}
+
+                                            <select value={taskFilter} onChange={(e) => setTaskFilter(e.target.value)} className="w-full pl-3 pr-8 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 shadow-sm"><option value="all">All Status</option><option value="pending">Pending</option><option value="completed">Completed</option></select>
+                                            <button onClick={() => setShowQuickAdd(!showQuickAdd)} className="bg-indigo-600 text-white p-2 rounded-lg hover:bg-indigo-700" title="Add Personal Task"><Icon name="Plus" className="w-4 h-4" /></button>
+                                        </div>
                                     )}
                                 </div>
                             </div>
