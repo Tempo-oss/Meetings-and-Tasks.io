@@ -784,8 +784,19 @@ create table if not exists pending_emails (
                             <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">To Do</h3>
                             {activeTasks.length === 0 && <p className="text-sm text-gray-400 italic">No open tasks.</p>}
                             {activeTasks.map(task => {
-                                const user = (teamMembers || []).find(u => (u.email === task.assignee || u.id === task.assignee)) || (attendees || []).find(u => (u.email === task.assignee || u.id === task.assignee)) || { name: 'Unknown' };
+                                let user = (teamMembers || []).find(u => (u.email === task.assignee || u.id === task.assignee)) || (attendees || []).find(u => (u.email === task.assignee || u.id === task.assignee));
+                                
+                                if (!user) {
+                                    // Fallback for raw text names (like "Rashad Mohamed")
+                                    if (task.assignee && !task.assignee.includes('@') && task.assignee.length < 50) {
+                                        user = { name: task.assignee };
+                                    } else {
+                                        user = { name: 'Unknown' };
+                                    }
+                                }
+                                
                                 task.assigneeName = user.name || user.email; 
+                                
                                 return <TaskCard key={task.id} task={task} meetingTitle="" onStatusChange={handleStatusChange} onObstacleChange={handleObstacleChange} onDateChange={handleDateChange}/>;
                             })}
                         </div>
@@ -1096,20 +1107,30 @@ create table if not exists pending_emails (
                         for (const u of allUsers) {
                             if (u.name) {
                                 const name = u.name.toLowerCase();
+                                const firstName = name.split(' ')[0];
+                                
                                 // Check if the text STARTS with the name (ignoring @ symbol)
-                                if (lowerText.startsWith(name) || lowerText.startsWith('@' + name)) {
+                                if (lowerText.startsWith(name) || lowerText.startsWith('@' + name) || 
+                                    (firstName.length > 2 && (lowerText.startsWith(firstName) || lowerText.startsWith('@' + firstName)))) {
                                     return u.id || u.email;
                                 }
                             }
                         }
                         
-                        return null; // Return null if no assignee found (to skip task)
+                        // 3. Last resort: If no user found, assume current user (importer) but allow reassign later
+                        //    Or, if text starts with Capital Words, extract that as a raw name assignee
+                        const potentialName = text.match(/^(@?([A-Z][a-z]+) ?([A-Z][a-z]+)?)/);
+                        if (potentialName && potentialName[0].length > 2) {
+                             return potentialName[0].replace('@', '').trim();
+                        }
+
+                        // Fallback to current user if absolutely no name found, so we don't lose the task
+                        return currentUser.id;
                     };
 
                     // Helper to extract date from text
                     const extractDate = (text) => {
                         if(!text) return null;
-                        // Match "Feb 4, 2026", "February 4, 2026", "2026-02-04"
                         const months = "Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|January|February|March|April|May|June|July|August|September|October|November|December";
                         const dateRegex = new RegExp(`(${months})\\s+\\d{1,2},?\\s+\\d{4}`, 'i');
                         const match = text.match(dateRegex);
@@ -1152,7 +1173,7 @@ create table if not exists pending_emails (
                             
                             if (stopProcessing) break;
                             
-                            // Check for Section Break or Horizontal Rule
+                            // Check for Section Break
                             if (elem.sectionBreak) {
                                 stopProcessing = true;
                                 break;
@@ -1196,18 +1217,28 @@ create table if not exists pending_emails (
                                         if (cleanText.length > 1) {
                                              const assignedTo = findUserInText(cleanText, richElements);
                                              
-                                             // Only proceed if an owner was found
+                                             // Always import if text is valid, even if assignedTo is fallback
                                              if (assignedTo) {
                                                  // Clean the name from the start of the task text if found via text match
+                                                 // Try to remove "Rashad Mohamed" from "Rashad Mohamed Create"
+                                                 let finalTaskText = cleanText;
                                                  const assignedUser = [...teamMembers, ...((meeting.participants || []).map(p => typeof p === 'string' ? {name:p, id:p} : p))].find(u => (u.id === assignedTo || u.email === assignedTo));
                                                  
-                                                 if (assignedUser && assignedUser.name) {
-                                                     const nameRegex = new RegExp(`^@?${assignedUser.name}\\s*`, 'i');
-                                                     cleanText = cleanText.replace(nameRegex, '').trim();
+                                                 let nameToRemove = assignedUser ? assignedUser.name : assignedTo; // If raw string, use that
+                                                 
+                                                 if (nameToRemove && typeof nameToRemove === 'string') {
+                                                     const nameRegex = new RegExp(`^@?${nameToRemove}\\s*`, 'i');
+                                                     finalTaskText = finalTaskText.replace(nameRegex, '').trim();
                                                  }
                                                  
-                                                 if (cleanText) {
-                                                    tasksFound.push({ text: cleanText, assignee: assignedTo });
+                                                 // Extra cleanup for simple first names
+                                                 if (assignedTo !== currentUser.id && typeof assignedTo === 'string' && !assignedTo.includes('@') && !assignedTo.includes('-')) {
+                                                      const simpleNameRegex = new RegExp(`^@?${assignedTo}\\s*`, 'i');
+                                                      finalTaskText = finalTaskText.replace(simpleNameRegex, '').trim();
+                                                 }
+                                                 
+                                                 if (finalTaskText) {
+                                                    tasksFound.push({ text: finalTaskText, assignee: assignedTo });
                                                  }
                                              }
                                         }
@@ -1223,7 +1254,7 @@ create table if not exists pending_emails (
                     const uniqueNewTasks = tasksFound.filter(tf => !existingTexts.has(tf.text.trim().toLowerCase()));
 
                     if (uniqueNewTasks.length === 0) { 
-                        // console.log("No new assigned tasks found in Doc."); 
+                        if (!silent) console.log("No new tasks found in Doc."); 
                     } else {
                         let createdCount = 0;
                         
@@ -1239,12 +1270,14 @@ create table if not exists pending_emails (
                                     const assigneeUser = [...teamMembers, ...((meeting.participants || []).map(p => typeof p === 'string' ? {name:p, id:p, email:p} : p))].find(u => (u.id === task.assignee || u.email === task.assignee));
                                     let recipientEmail = null;
                                     let recipientName = 'Team Member';
+                                    
                                     if (assigneeUser) {
                                         recipientEmail = assigneeUser.email;
                                         recipientName = assigneeUser.name || recipientName;
                                     } else if (typeof task.assignee === 'string' && task.assignee.includes('@')) {
                                         recipientEmail = task.assignee;
                                     }
+                                    
                                     if (recipientEmail) {
                                         queueEmail(recipientEmail, `New Task Imported: ${task.text}`, `Hi ${recipientName},\n\nA new task was imported from the meeting doc: "${task.text}".\nStart Date: ${taskStartDate}\n\n- MeetingMate`);
                                     }
@@ -1380,7 +1413,6 @@ create table if not exists pending_emails (
                     
                     const teamMemberIdentifiers = teamMembers
                         .filter(tm => myManagedTeams.includes(tm.team))
-                        // EXCLUDE current user's email so "My Team" only shows OTHERS' tasks
                         .filter(tm => tm.email && tm.email.toLowerCase() !== (currentUser?.email || '').toLowerCase())
                         .flatMap(tm => {
                              const colleague = colleagues.find(c => c.email === tm.email);
@@ -1390,9 +1422,7 @@ create table if not exists pending_emails (
                     scopeFiltered = tasks.filter(t => {
                         const a = t.assignee; 
                         if (!a) return false;
-                        // Extra safety check: Exclude own ID or Email
                         if (a === currentUser?.id || a === currentUser?.email) return false;
-                        
                         return teamMemberIdentifiers.includes(a) || teamMemberIdentifiers.includes(a.toLowerCase());
                     });
                 }
