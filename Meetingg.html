@@ -1223,15 +1223,27 @@ create table if not exists pending_emails (
                         let createdCount = 0;
                         const taskStartDate = (!usedDateFallback && foundDateStr) ? foundDateStr : (meeting.date || getTodayISO()); 
                         
+                        // Prevent Duplicates: Check against existing tasks for this meeting
+                        const existingTexts = new Set(tasks.filter(t => t.meetingId === meeting.id).map(t => t.text.trim().toLowerCase()));
+
                         for (const task of tasksFound) {
+                             const normalizedText = task.text.trim().toLowerCase();
+                             if (existingTexts.has(normalizedText)) continue;
+
                              const taskId = `t_doc_${Date.now()}_${Math.floor(Math.random()*10000)}`;
                              setTasks(prev => [...prev, { id: taskId, meetingId: meeting.id, text: task.text, assignee: task.assignee, status: 'pending', start_date: taskStartDate, end_date: null }]);
                              if (client) { await client.from('tasks').insert({ id: taskId, meeting_id: meeting.id, text: task.text, assignee: task.assignee, status: 'pending', start_date: taskStartDate, end_date: null }); }
+                             
+                             existingTexts.add(normalizedText); // Add to set to prevent duplicates within the same import batch
                              createdCount++;
                         }
                         
-                        const msgSource = (!usedDateFallback && foundDateStr) ? `section: ${foundDateStr}` : "entire doc";
-                        alert(`Imported ${createdCount} tasks from ${msgSource}!`);
+                        if (createdCount === 0) {
+                            alert("No new tasks imported (duplicates skipped).");
+                        } else {
+                            const msgSource = (!usedDateFallback && foundDateStr) ? `section: ${foundDateStr}` : "entire doc";
+                            alert(`Imported ${createdCount} tasks from ${msgSource}!`);
+                        }
                     }
                 } catch (e) { console.error(e); alert("Import failed: " + e.message); } finally { setIsSyncing(false); }
             };
