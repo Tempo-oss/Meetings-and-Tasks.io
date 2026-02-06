@@ -1163,6 +1163,9 @@ create table if not exists pending_emails (
                             
                             let rawText = paraText.replace(/\u00A0/g, ' ').trim();
 
+                            // EXCLUSION: Skip lines that are likely metadata (Attendees, etc.) even if they contain people
+                            if (/^(attendees|participants|guests|cc|to):/i.test(rawText)) continue;
+
                             // 2. Identify if it's a Task
                             // It is a task if: It has a bullet OR it has a manual checkbox OR it has a Person Chip at the start
                             const isBullet = !!paraNode.bullet;
