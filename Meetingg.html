@@ -1173,7 +1173,7 @@ create table if not exists pending_emails (
                             
                             if (stopProcessing) break;
                             
-                            // Check for Section Break
+                            // Check for Section Break or Horizontal Rule
                             if (elem.sectionBreak) {
                                 stopProcessing = true;
                                 break;
