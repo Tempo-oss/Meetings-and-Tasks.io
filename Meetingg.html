@@ -1064,9 +1064,8 @@ create table if not exists pending_emails (
                     const resp = await fetch(`https://docs.googleapis.com/v1/documents/${docId}`, { headers: { Authorization: `Bearer ${session.provider_token}` } });
                     if (!resp.ok) { const err = await resp.json(); throw new Error(err.error?.message || "Failed to fetch Doc"); }
                     const docData = await resp.json();
-                    let tasksFound = [];
                     
-                    // Helper: Find User in Rich Text (Smart Chips) or Plain Text
+                    // --- HELPERS ---
                     const findUserInText = (text, richTextElements) => {
                         // 1. Check Smart Chips
                         if (richTextElements && richTextElements.length > 0) {
@@ -1081,15 +1080,14 @@ create table if not exists pending_emails (
                                 }
                             }
                         }
-                        // 2. Fallback: Text matching
-                        const lowerText = text.toLowerCase();
+                        // 2. Fallback: Text matching (handling non-breaking spaces)
+                        const lowerText = text.toLowerCase().replace(/\u00A0/g, ' ');
                         const allUsers = [...teamMembers, ...((meeting.participants || []).map(p => typeof p === 'string' ? {name:p, id:p} : p))];
-                        allUsers.sort((a, b) => (b.name?.length || 0) - (a.name?.length || 0)); // Longest names first
+                        allUsers.sort((a, b) => (b.name?.length || 0) - (a.name?.length || 0)); 
 
                         for (const u of allUsers) {
                             if (u.name) {
                                 const name = u.name.toLowerCase();
-                                // Match "Rashad Mohamed" or "@Rashad Mohamed" at start of text
                                 if (lowerText.startsWith(name) || lowerText.startsWith('@' + name)) {
                                     return u.id || u.email;
                                 }
@@ -1098,7 +1096,6 @@ create table if not exists pending_emails (
                         return null;
                     };
 
-                    // Helper: Deep extract text from any structural element (Paragraph or Table) to find Dates
                     const getTextFromStructuralElement = (elem) => {
                         let text = '';
                         if (elem.paragraph) {
@@ -1107,7 +1104,7 @@ create table if not exists pending_emails (
                             elem.table.tableRows.forEach(row => {
                                 row.tableCells.forEach(cell => {
                                     cell.content.forEach(cellContent => {
-                                        text += getTextFromStructuralElement(cellContent) + ' '; // Add space between cells
+                                        text += getTextFromStructuralElement(cellContent) + ' '; 
                                     });
                                 });
                             });
@@ -1115,108 +1112,120 @@ create table if not exists pending_emails (
                         return text;
                     };
 
+                    // --- CORE SCANNING LOGIC ---
                     const content = docData.body?.content || [];
+                    
+                    // PASS 1: Find valid Meeting Date (>= 2023 to avoid old/fake dates)
                     let searchIndex = 0;
                     let foundDateStr = null;
-
-                    // --- PASS 1: SCAN FOR MOST UPDATED DATE (Including Tables) ---
                     let maxTimestamp = 0;
                     
                     content.forEach((elem, idx) => {
                         const txt = getTextFromStructuralElement(elem).trim();
-                        // Extended Regex to capture more formats including "Feb 12, 2026"
-                        const dateMatch = txt.match(/\b(?:\d{4}-\d{2}-\d{2}|\d{1,2}\/\d{1,2}\/\d{2,4}|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s\d{1,2}(?:st|nd|rd|th)?(?:,?\s\d{4})?|\d{1,2}\s(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?(?:\s\d{4})?)\b/i);
+                        // Regex for standard dates + "Feb 12, 2026" style. Enforcing 2023+ via logic, not strict regex.
+                        const dateMatch = txt.match(/\b(?:\d{4}-\d{2}-\d{2}|\d{1,2}\/\d{1,2}\/\d{4}|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s\d{1,2}(?:st|nd|rd|th)?(?:,?\s\d{4})?)\b/i);
                         
                         if (dateMatch) {
                             const ts = Date.parse(dateMatch[0]);
                             if (!isNaN(ts)) {
-                                // Filter out obviously wrong/old dates (older than 2020) to prevent misfires like "2001"
-                                if (ts > new Date('2020-01-01').getTime() && ts > maxTimestamp) {
+                                // STRICT FILTER: Ignore dates before Jan 1, 2023 to filter out noise/garbage
+                                if (ts > new Date('2023-01-01').getTime() && ts > maxTimestamp) {
                                     maxTimestamp = ts;
-                                    searchIndex = idx + 1; // Start searching AFTER this structural element
+                                    searchIndex = idx + 1; 
                                     foundDateStr = new Date(ts).toISOString().split('T')[0];
                                 }
                             }
                         }
                     });
 
-                    // --- PASS 2: COLLECT TASKS ---
-                    // Helper to process a paragraph for tasks
-                    const processParagraphForTask = (paragraph) => {
-                        if (!paragraph.bullet) return null; // Checklist must be a list
-                        
-                        let paraText = '';
-                        let richElements = [];
-                        paragraph.elements.forEach(pElem => {
-                            if (pElem.textRun) paraText += pElem.textRun.content;
-                            if (pElem.person) richElements.push(pElem);
-                        });
-                        
-                        // Clean text: remove "[ ]", "[]", or checkbox chars
-                        let cleanText = paraText.trim().replace(/^\[\s*\]\s*/, '').replace(/^\u2610\s*/, '').trim();
+                    // Helper to scan a slice of content for tasks
+                    const scanForTasks = (startIndex) => {
+                        const results = [];
+                        for (let i = startIndex; i < content.length; i++) {
+                            const elem = content[i];
+                            
+                            // Stop if we hit a major separator (Section Break or Horizontal Rule)
+                            if (elem.sectionBreak) break;
+                            if (elem.paragraph?.elements?.some(e => e.horizontalRule)) break; 
 
-                        if (cleanText.length > 1) {
-                            const assignedTo = findUserInText(cleanText, richElements);
-                            if (assignedTo) {
-                                const assignedUser = [...teamMembers, ...((meeting.participants || []).map(p => typeof p === 'string' ? {name:p, id:p} : p))].find(u => (u.id === assignedTo || u.email === assignedTo));
-                                if (assignedUser && assignedUser.name) {
-                                    const nameRegex = new RegExp(`^@?${assignedUser.name}\\s*`, 'i');
-                                    cleanText = cleanText.replace(nameRegex, '').trim();
-                                }
-                                // Remove leading punctuation like "-" or ":" after name removal
-                                cleanText = cleanText.replace(/^[:\-–—]\s*/, '').trim();
+                            // Helper function to process any paragraph node found (in body or table)
+                            const checkNode = (paraNode) => {
+                                if (!paraNode.bullet) return;
                                 
-                                if (cleanText) {
-                                    return { text: cleanText, assignee: assignedTo };
-                                }
-                            }
-                        }
-                        return null;
-                    };
+                                let paraText = '';
+                                let richElements = [];
+                                paraNode.elements.forEach(pElem => {
+                                    if (pElem.textRun) paraText += pElem.textRun.content;
+                                    if (pElem.person) richElements.push(pElem);
+                                });
+                                
+                                // Clean glyphs and NBSP
+                                let cleanText = paraText.trim().replace(/^\[\s*\]\s*/, '').replace(/^\u2610\s*/, '').replace(/\u00A0/g, ' ').trim();
 
-                    for (let i = searchIndex; i < content.length; i++) {
-                        const elem = content[i];
-                        
-                        // STOP at next separator
-                        if (elem.sectionBreak) break;
-                        if (elem.paragraph?.elements?.some(e => e.horizontalRule)) break; 
-
-                        if (elem.paragraph) {
-                            const task = processParagraphForTask(elem.paragraph);
-                            if (task) tasksFound.push(task);
-                        } 
-                        // Also scan inside tables for tasks (if Action Items are in a table)
-                        else if (elem.table) {
-                            elem.table.tableRows.forEach(row => {
-                                row.tableCells.forEach(cell => {
-                                    cell.content.forEach(cellElem => {
-                                        if (cellElem.paragraph) {
-                                            const task = processParagraphForTask(cellElem.paragraph);
-                                            if (task) tasksFound.push(task);
+                                if (cleanText.length > 1) {
+                                    const assignedTo = findUserInText(cleanText, richElements);
+                                    if (assignedTo) {
+                                        const assignedUser = [...teamMembers, ...((meeting.participants || []).map(p => typeof p === 'string' ? {name:p, id:p} : p))].find(u => (u.id === assignedTo || u.email === assignedTo));
+                                        
+                                        // Strip name from text start
+                                        if (assignedUser && assignedUser.name) {
+                                            const nameRegex = new RegExp(`^@?${assignedUser.name}\\s*`, 'i');
+                                            cleanText = cleanText.replace(nameRegex, '').trim();
                                         }
+                                        // Cleanup punctuation
+                                        cleanText = cleanText.replace(/^[:\-–—]\s*/, '').trim();
+                                        
+                                        if (cleanText) {
+                                            results.push({ text: cleanText, assignee: assignedTo });
+                                        }
+                                    }
+                                }
+                            };
+
+                            if (elem.paragraph) {
+                                checkNode(elem.paragraph);
+                            } else if (elem.table) {
+                                elem.table.tableRows.forEach(row => {
+                                    row.tableCells.forEach(cell => {
+                                        cell.content.forEach(cellElem => {
+                                            if (cellElem.paragraph) checkNode(cellElem.paragraph);
+                                        });
                                     });
                                 });
-                            });
+                            }
                         }
+                        return results;
+                    };
+
+                    // Execute Scan
+                    let tasksFound = scanForTasks(searchIndex);
+                    let usedDateFallback = false;
+
+                    // FALLBACK: If a date was found but ZERO tasks were extracted, it might be a false positive date 
+                    // or the tasks are above it. Retry by scanning the WHOLE document.
+                    if (foundDateStr && tasksFound.length === 0) {
+                        console.log("No tasks found under date " + foundDateStr + ". Retrying full doc scan.");
+                        tasksFound = scanForTasks(0);
+                        usedDateFallback = true;
                     }
 
                     if (tasksFound.length === 0) { 
-                        alert(foundDateStr 
-                            ? `Found date ${foundDateStr}, but no assigned tasks under it.` 
-                            : "No assigned checklist items found."); 
+                        alert("No assigned checklist items found in document."); 
                     } 
                     else {
                         let createdCount = 0;
-                        // Use the found date for the task start_date, fallback to meeting date
-                        const taskStartDate = foundDateStr || meeting.date || getTodayISO(); 
+                        // Determine appropriate start date
+                        const taskStartDate = (!usedDateFallback && foundDateStr) ? foundDateStr : (meeting.date || getTodayISO()); 
                         
                         for (const task of tasksFound) {
                              const taskId = `t_doc_${Date.now()}_${Math.floor(Math.random()*10000)}`;
-                             setTasks(prev => [...prev, { id: taskId, meetingId: meeting.id, text: task.text, assignee: task.assignee, status: 'pending', start_date: taskStartDate, end_date: null }]); // Due date empty
+                             setTasks(prev => [...prev, { id: taskId, meetingId: meeting.id, text: task.text, assignee: task.assignee, status: 'pending', start_date: taskStartDate, end_date: null }]);
                              if (client) { await client.from('tasks').insert({ id: taskId, meeting_id: meeting.id, text: task.text, assignee: task.assignee, status: 'pending', start_date: taskStartDate, end_date: null }); }
                              createdCount++;
                         }
-                        alert(`Imported ${createdCount} tasks from section: ${foundDateStr || "Top of Doc"}!`);
+                        
+                        const msgSource = (!usedDateFallback && foundDateStr) ? `section: ${foundDateStr}` : "entire doc";
+                        alert(`Imported ${createdCount} tasks from ${msgSource}!`);
                     }
                 } catch (e) { console.error(e); alert("Import failed: " + e.message); } finally { setIsSyncing(false); }
             };
