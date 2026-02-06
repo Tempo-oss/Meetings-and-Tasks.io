@@ -775,7 +775,9 @@ create table if not exists pending_emails (
 
                     {meetingId && meetingId !== 'standalone' && (
                         <div className="px-6 py-2 flex justify-end">
-                            {/* REMOVED: Manual Import Button (now automatic on click) */}
+                            <button className="text-xs flex items-center text-indigo-600 hover:text-indigo-800 font-medium" onClick={onImport}>
+                                <Icon name="Download" className="w-3 h-3 mr-1" /> Import from Doc
+                            </button>
                         </div>
                     )}
 
@@ -947,7 +949,7 @@ create table if not exists pending_emails (
             };
 
             const handleRemoveTeamMember = async (email) => {
-                if (!confirm(`Are you sure you want to remove ${email} from the tool?`)) return;
+                if (!confirm(`Are you sure you want to remove ${email}?`)) return;
                 setTeamMembers(prev => prev.filter(m => m.email !== email));
                 if (dbStatus === 'connected' && client) {
                     try { const { error } = await client.from('team_members').delete().eq('email', email); if (error) throw error; } catch (e) { console.error(e); alert("Failed to remove member"); }
@@ -1053,12 +1055,14 @@ create table if not exists pending_emails (
                 } catch (e) { console.error(e); alert("Sync Error: " + e.message); } finally { setIsSyncing(false); }
             };
 
-            const handleImportFromDoc = async (meeting) => {
-                if (!session?.provider_token) { alert("Missing Google Token. Please re-login."); return; }
-                if (!meeting.google_doc_link) { alert("No Google Doc linked to this meeting."); return; }
+            const handleImportFromDoc = async (meeting, silent = false) => {
+                if (!session?.provider_token) { if(!silent) alert("Missing Google Token. Please re-login."); return; }
+                if (!meeting.google_doc_link) { if(!silent) alert("No Google Doc linked to this meeting."); return; }
+                
                 const match = meeting.google_doc_link.match(/\/d\/([a-zA-Z0-9-_]+)/);
-                if (!match) { alert("Invalid Google Doc Link."); return; }
+                if (!match) { if(!silent) alert("Invalid Google Doc Link."); return; }
                 const docId = match[1];
+
                 setIsSyncing(true);
                 try {
                     const resp = await fetch(`https://docs.googleapis.com/v1/documents/${docId}`, { headers: { Authorization: `Bearer ${session.provider_token}` } });
@@ -1165,42 +1169,50 @@ create table if not exists pending_emails (
 
                                 // Only process bullets (checklists usually have bullet property)
                                 if (elem.paragraph.bullet) {
-                                    let paraText = '';
-                                    let richElements = [];
-
-                                    elem.paragraph.elements.forEach(pElem => {
-                                        if (pElem.textRun) {
-                                            paraText += pElem.textRun.content;
-                                        }
-                                        // Collect elements that might contain people chips
-                                        if (pElem.person) {
-                                            richElements.push(pElem);
-                                        }
-                                    });
+                                    const listId = elem.paragraph.bullet.listId;
+                                    const nestingLevel = elem.paragraph.bullet.nestingLevel || 0;
+                                    const listDetails = docData.lists?.[listId];
+                                    const glyphType = listDetails?.listProperties?.nestingLevels?.[nestingLevel]?.glyphType;
                                     
-                                    paraText = paraText.trim();
-                                    
-                                    // Remove checkbox glyphs
-                                    let cleanText = paraText.replace(/^\[\s*\]\s*/, '').trim();
+                                    // STRICT CHECK: Must be a CHECKBOX to be imported
+                                    if (glyphType === 'CHECKBOX') {
+                                        let paraText = '';
+                                        let richElements = [];
 
-                                    // If text exists
-                                    if (cleanText.length > 1) {
-                                         const assignedTo = findUserInText(cleanText, richElements);
-                                         
-                                         // Only proceed if an owner was found
-                                         if (assignedTo) {
-                                             // Clean the name from the start of the task text if found via text match
-                                             const assignedUser = [...teamMembers, ...((meeting.participants || []).map(p => typeof p === 'string' ? {name:p, id:p} : p))].find(u => (u.id === assignedTo || u.email === assignedTo));
+                                        elem.paragraph.elements.forEach(pElem => {
+                                            if (pElem.textRun) {
+                                                paraText += pElem.textRun.content;
+                                            }
+                                            // Collect elements that might contain people chips
+                                            if (pElem.person) {
+                                                richElements.push(pElem);
+                                            }
+                                        });
+                                        
+                                        paraText = paraText.trim();
+                                        
+                                        // Remove checkbox glyphs
+                                        let cleanText = paraText.replace(/^\[\s*\]\s*/, '').trim();
+
+                                        // If text exists
+                                        if (cleanText.length > 1) {
+                                             const assignedTo = findUserInText(cleanText, richElements);
                                              
-                                             if (assignedUser && assignedUser.name) {
-                                                 const nameRegex = new RegExp(`^@?${assignedUser.name}\\s*`, 'i');
-                                                 cleanText = cleanText.replace(nameRegex, '').trim();
+                                             // Only proceed if an owner was found
+                                             if (assignedTo) {
+                                                 // Clean the name from the start of the task text if found via text match
+                                                 const assignedUser = [...teamMembers, ...((meeting.participants || []).map(p => typeof p === 'string' ? {name:p, id:p} : p))].find(u => (u.id === assignedTo || u.email === assignedTo));
+                                                 
+                                                 if (assignedUser && assignedUser.name) {
+                                                     const nameRegex = new RegExp(`^@?${assignedUser.name}\\s*`, 'i');
+                                                     cleanText = cleanText.replace(nameRegex, '').trim();
+                                                 }
+                                                 
+                                                 if (cleanText) {
+                                                    tasksFound.push({ text: cleanText, assignee: assignedTo });
+                                                 }
                                              }
-                                             
-                                             if (cleanText) {
-                                                tasksFound.push({ text: cleanText, assignee: assignedTo });
-                                             }
-                                         }
+                                        }
                                     }
                                 }
                             }
@@ -1242,9 +1254,9 @@ create table if not exists pending_emails (
                              }
                              createdCount++;
                         }
-                        alert(`Imported ${createdCount} assigned tasks from Doc!`);
+                        if(!silent) alert(`Imported ${createdCount} assigned tasks from Doc!`);
                     }
-                } catch (e) { console.error(e); alert("Import failed: " + e.message); } finally { setIsSyncing(false); }
+                } catch (e) { console.error(e); if(!silent) alert("Import failed: " + e.message); } finally { setIsSyncing(false); }
             };
 
             const handleAddTeamMember = async (email, name, team, role, systemRole) => {
@@ -1284,17 +1296,7 @@ create table if not exists pending_emails (
                 const newId = `t_${Date.now()}`;
                 const newTask = { id: newId, meeting_id: 'standalone', text: text, assignee: assigneeId || currentUser.id, status: 'pending', start_date: start, end_date: end };
                 setTasks(prev => [newTask, ...prev]);
-                if (dbStatus === 'connected' && client) { 
-                    client.from('tasks').insert(newTask).then(({error}) => { if(error) console.error("Error", error); }); 
-                    
-                    // Email Trigger
-                    if (newTask.assignee !== currentUser.id) {
-                         const assigneeUser = teamMembers.find(m => m.email === newTask.assignee || m.id === newTask.assignee) || colleagues.find(c => c.email === newTask.assignee || c.id === newTask.assignee);
-                         if (assigneeUser && assigneeUser.email) {
-                             queueEmail(assigneeUser.email, `New Task Assigned: ${text}`, `Hi ${assigneeUser.name},\n\nYou have been assigned a new task: "${text}".\nStart: ${start}\nDue: ${end}\n\n- MeetingMate`);
-                         }
-                    }
-                }
+                if (dbStatus === 'connected' && client) { client.from('tasks').insert(newTask).then(({error}) => { if(error) console.error("Error", error); }); }
                 setShowQuickAdd(false);
             };
 
