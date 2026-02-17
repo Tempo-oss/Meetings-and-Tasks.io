@@ -1139,8 +1139,9 @@ alter publication supabase_realtime add table meetings, tasks, team_members;
                 if (!session?.provider_token) { alert("Sync Unavailable: Missing Google Access Token. Please re-login."); return; }
                 setIsSyncing(true);
                 try {
-                    // Default to start of TODAY, not "now", to catch meetings from earlier today
+                    // Start sync from Yesterday to catch recent moves/deletions and handle timezone edges safely
                     let timeMin = new Date();
+                    timeMin.setDate(timeMin.getDate() - 1); // Go back 1 day
                     timeMin.setHours(0,0,0,0);
                     
                     if (syncRange === 'past_month') { 
@@ -1148,16 +1149,27 @@ alter publication supabase_realtime add table meetings, tasks, team_members;
                     }
                     
                     const timeMinIso = timeMin.toISOString();
-                    const dateMinStr = timeMinIso.split('T')[0]; // YYYY-MM-DD
+                    // We need the date string for the DB query. 
+                    // To be safe against UTC shifts affecting the "gte" query, we use the ISO date part.
+                    const dateMinStr = timeMinIso.split('T')[0]; 
 
                     // Add a timestamp to prevent caching
                     const cacheBuster = new Date().getTime();
-                    const resp = await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events?maxResults=250&orderBy=startTime&singleEvents=true&timeMin=${timeMinIso}&_=${cacheBuster}`, { headers: { Authorization: `Bearer ${session.provider_token}` } });
+                    // Increased maxResults to ensure we get all relevant events
+                    const resp = await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events?maxResults=500&orderBy=startTime&singleEvents=true&timeMin=${timeMinIso}&_=${cacheBuster}`, { 
+                        headers: { 
+                            Authorization: `Bearer ${session.provider_token}`,
+                            'Cache-Control': 'no-cache' // Explicit no-cache
+                        } 
+                    });
                     if (!resp.ok) throw new Error("Failed to fetch from Google");
                     const data = await resp.json();
                     
                     // Track IDs found in Google to identify stale ones in DB
                     const gCalEventIds = new Set();
+
+                    // Batch database operations for performance
+                    const upsertPromises = [];
 
                     for (const event of data.items) {
                         if (event.status === 'cancelled') continue;
@@ -1171,17 +1183,19 @@ alter publication supabase_realtime add table meetings, tasks, team_members;
                         let dateStr, timeStr;
                         
                         if (event.start.date) {
-                            // All-day event: Use the date string directly to avoid timezone shift errors
+                            // All-day event
                             dateStr = event.start.date;
                             timeStr = 'All Day';
                         } else {
                             // Timed event: Calculate local date string correctly
                             const start = new Date(event.start.dateTime);
                             const offset = start.getTimezoneOffset() * 60000;
-                            dateStr = new Date(start.getTime() - offset).toISOString().split('T')[0];
+                            const localDate = new Date(start.getTime() - offset);
+                            dateStr = localDate.toISOString().split('T')[0];
                             timeStr = start.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
                         }
                         
+                        // Check description for tasks
                         const description = event.description || '';
                         const taskRegex = /(?:^|\n)(?:-? ?\[ ?\]|TODO:|Task:)\s*(.+)/gi;
                         let match;
@@ -1189,6 +1203,7 @@ alter publication supabase_realtime add table meetings, tasks, team_members;
                             const taskText = match[1].trim();
                             if (taskText) {
                                 const taskId = `t_${event.id}_${taskText.substring(0, 5).replace(/\s/g, '')}`;
+                                // Upsert task immediately (or batch if preferred, but immediate is safer for now)
                                 await client.from('tasks').upsert({ id: taskId, meeting_id: mId, text: taskText, assignee: currentUser.id, status: 'pending' }, { ignoreDuplicates: true });
                             }
                         }
@@ -1207,7 +1222,7 @@ alter publication supabase_realtime add table meetings, tasks, team_members;
                         if (!videoLink && event.location && (event.location.startsWith('http') || event.location.startsWith('https'))) { videoLink = event.location; }
 
                         if (client) {
-                            await client.from('meetings').upsert({ 
+                            upsertPromises.push(client.from('meetings').upsert({ 
                                 id: mId, 
                                 title: event.summary || '(No Title)', 
                                 date: dateStr, 
@@ -1220,9 +1235,12 @@ alter publication supabase_realtime add table meetings, tasks, team_members;
                                 platform: 'Google Calendar', 
                                 google_doc_link: gDocLink, 
                                 video_link: videoLink 
-                            });
+                            }));
                         }
                     }
+                    
+                    // Run all upserts
+                    await Promise.all(upsertPromises);
 
                     // --- STALE DATA CLEANUP ---
                     // Remove meetings from DB that are within our sync range but NOT in the Google response (deleted/declined)
@@ -1231,7 +1249,7 @@ alter publication supabase_realtime add table meetings, tasks, team_members;
                             .from('meetings')
                             .select('id, google_calendar_id')
                             .eq('platform', 'Google Calendar')
-                            .gte('date', dateMinStr); // Only check meetings from start date onwards
+                            .gte('date', dateMinStr); // Clean up anything from "Yesterday" onwards
                         
                         if (dbMeetings) {
                             const staleIds = dbMeetings
@@ -1241,15 +1259,12 @@ alter publication supabase_realtime add table meetings, tasks, team_members;
                             if (staleIds.length > 0) {
                                 console.log("Cleaning up stale meetings:", staleIds);
                                 await client.from('meetings').delete().in('id', staleIds);
-                                // Optional: Cascade delete tasks or keep them? 
-                                // Usually safe to delete tasks for deleted meetings to keep DB clean
                                 await client.from('tasks').delete().in('meeting_id', staleIds);
                             }
                         }
                     }
 
                     await fetchData(client); 
-                    // No alert to allow smoother flow, or unobtrusive toast
                 } catch (e) { console.error(e); alert("Sync Error: " + e.message); } finally { setIsSyncing(false); }
             };
 
