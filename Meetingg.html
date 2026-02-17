@@ -143,7 +143,13 @@ create table if not exists pending_emails (
     created_at timestamp with time zone DEFAULT timezone('utc'::text, now()) NOT NULL
 );
 
--- IMPORTANT: Enable Realtime for these tables so the dashboard updates instantly
+-- CRITICAL: Disable RLS for prototype to allow writes, OR add policies
+alter table meetings disable row level security;
+alter table tasks disable row level security;
+alter table team_members disable row level security;
+alter table pending_emails disable row level security;
+
+-- Enable Realtime
 alter publication supabase_realtime add table meetings, tasks, team_members;
 `;
 
@@ -234,7 +240,7 @@ alter publication supabase_realtime add table meetings, tasks, team_members;
             );
         };
 
-        const AppHeader = ({ currentUser, onLogout, onClear, onSync, dbStatus, onBack, title, isSyncing, syncRange, setSyncRange, meeting }) => (
+        const AppHeader = ({ currentUser, onLogout, onClear, onSync, dbStatus, onBack, title, isSyncing, syncRange, setSyncRange, meeting, lastSynced }) => (
             <header className="bg-black border-b border-gray-800 h-16 flex items-center justify-between px-4 sm:px-6 shrink-0 sticky top-0 z-20 text-white">
                 <div className="flex items-center space-x-3 flex-1 min-w-0">
                     {onBack && (
@@ -269,14 +275,17 @@ alter publication supabase_realtime add table meetings, tasks, team_members;
 
                     {onSync && (dbStatus === 'empty' || dbStatus === 'connected') && 
                         <div className="flex items-center space-x-2">
-                            <select 
-                                value={syncRange}
-                                onChange={(e) => setSyncRange(e.target.value)}
-                                className="text-xs border-gray-700 bg-black text-gray-300 rounded border p-1 focus:outline-none focus:ring-1 focus:ring-tempo-red hidden sm:block"
-                            >
-                                <option value="upcoming">Upcoming</option>
-                                <option value="past_month">Past 30 Days</option>
-                            </select>
+                            <div className="flex flex-col items-end mr-2">
+                                <select 
+                                    value={syncRange}
+                                    onChange={(e) => setSyncRange(e.target.value)}
+                                    className="text-xs border-gray-700 bg-black text-gray-300 rounded border p-1 focus:outline-none focus:ring-1 focus:ring-tempo-red hidden sm:block mb-0.5"
+                                >
+                                    <option value="upcoming">Upcoming</option>
+                                    <option value="past_month">Past 30 Days</option>
+                                </select>
+                                {lastSynced && <span className="text-[9px] text-gray-500 hidden sm:block">Last: {lastSynced}</span>}
+                            </div>
                             <button onClick={onSync} disabled={isSyncing} className="text-sm font-medium text-tempo-red hover:text-red-400 flex items-center disabled:opacity-50" title="Click to refresh from Google Calendar">
                                 <Icon name="RefreshCw" className={`w-4 h-4 mr-1 ${isSyncing ? 'animate-spin' : ''}`}/> 
                                 <span className="hidden sm:inline">{isSyncing ? 'Syncing...' : 'Sync'}</span>
@@ -902,6 +911,7 @@ alter publication supabase_realtime add table meetings, tasks, team_members;
             const [meetingScope, setMeetingScope] = useState('me'); // Added Meeting Scope
             const [showQuickAdd, setShowQuickAdd] = useState(false); 
             const [showPast, setShowPast] = useState(false); // New state for toggling past meetings
+            const [lastSynced, setLastSynced] = useState(null);
 
             const [meetings, setMeetings] = useState([]);
             const [tasks, setTasks] = useState([]);
@@ -1139,12 +1149,8 @@ alter publication supabase_realtime add table meetings, tasks, team_members;
                 if (!session?.provider_token) { alert("Sync Unavailable: Missing Google Access Token. Please re-login."); return; }
                 setIsSyncing(true);
                 
-                // Force a visible "loading" state by temporarily clearing meetings if needed, 
-                // but let's be smoother. We will rely on the spinner.
-                
                 try {
                     // Start sync from 7 DAYS AGO to catch any recent moves/deletions robustly
-                    // This handles cases where a meeting was moved from Today back to Yesterday, or vice versa
                     let timeMin = new Date();
                     timeMin.setDate(timeMin.getDate() - 7); 
                     timeMin.setHours(0,0,0,0);
@@ -1167,16 +1173,21 @@ alter publication supabase_realtime add table meetings, tasks, team_members;
                         } 
                     });
                     
+                    if (resp.status === 401) {
+                        alert("Google Authentication Expired. Please log out and sign in again.");
+                        throw new Error("Token expired");
+                    }
+
                     if (!resp.ok) throw new Error("Failed to fetch from Google");
                     const data = await resp.json();
                     
                     console.log(`Fetched ${data.items.length} events from Google.`);
                     
                     const gCalEventIds = new Set();
-                    const upsertPromises = [];
+                    const meetingBatch = [];
+                    const taskBatch = [];
 
                     for (const event of data.items) {
-                        // Skip cancelled events so they get cleaned up by stale logic
                         if (event.status === 'cancelled') continue;
                         
                         gCalEventIds.add(event.id);
@@ -1205,12 +1216,11 @@ alter publication supabase_realtime add table meetings, tasks, team_members;
                             const taskText = match[1].trim();
                             if (taskText) {
                                 const taskId = `t_${event.id}_${taskText.substring(0, 5).replace(/\s/g, '')}`;
-                                upsertPromises.push(client.from('tasks').upsert({ id: taskId, meeting_id: mId, text: taskText, assignee: currentUser.id, status: 'pending' }, { ignoreDuplicates: true }));
+                                taskBatch.push({ id: taskId, meeting_id: mId, text: taskText, assignee: currentUser.id, status: 'pending' });
                             }
                         }
 
                         const attendees = event.attendees ? event.attendees.map(a => ({ id: a.email, email: a.email, name: a.displayName || a.email.split('@')[0], avatar: (a.displayName || a.email).substring(0,2).toUpperCase() })) : [];
-                        // Ensure no undefined values in JSON
                         const safeAttendees = attendees.map(a => JSON.parse(JSON.stringify(a)));
                         
                         const userInAttendees = safeAttendees.find(a => a.email && a.email.toLowerCase() === currentUser.email.toLowerCase());
@@ -1226,27 +1236,38 @@ alter publication supabase_realtime add table meetings, tasks, team_members;
                         if (!videoLink && event.location && (event.location.startsWith('http') || event.location.startsWith('https'))) { videoLink = event.location; }
 
                         if (client) {
-                            upsertPromises.push(client.from('meetings').upsert({ 
+                            meetingBatch.push({ 
                                 id: mId, 
                                 title: event.summary || '(No Title)', 
                                 date: dateStr, 
                                 time: timeStr, 
                                 duration: '1h', 
-                                participants: safeAttendees, // Safe JSON
+                                participants: safeAttendees, 
                                 doc_id: docId, 
                                 google_calendar_id: event.id, 
                                 synced: true, 
                                 platform: 'Google Calendar', 
                                 google_doc_link: gDocLink, 
                                 video_link: videoLink 
-                            }));
+                            });
                         }
                     }
                     
-                    // Execute all upserts
-                    if (upsertPromises.length > 0) {
-                        await Promise.all(upsertPromises);
-                        console.log("Upserts completed.");
+                    // BATCH OPS
+                    if (client) {
+                        if (meetingBatch.length > 0) {
+                            const { error } = await client.from('meetings').upsert(meetingBatch);
+                            if (error) {
+                                console.error(error);
+                                if (error.message.includes("row-level security")) alert("Database Write Locked: Go to Supabase > SQL Editor and run the provided setup script.");
+                                else alert("Sync Write Error: " + error.message);
+                                throw error;
+                            }
+                        }
+                        if (taskBatch.length > 0) {
+                            const { error } = await client.from('tasks').upsert(taskBatch, { ignoreDuplicates: true });
+                            if (error) console.error("Task sync error (non-fatal):", error);
+                        }
                     }
 
                     // --- STALE DATA CLEANUP ---
@@ -1255,7 +1276,7 @@ alter publication supabase_realtime add table meetings, tasks, team_members;
                             .from('meetings')
                             .select('id, google_calendar_id')
                             .eq('platform', 'Google Calendar')
-                            .gte('date', dateMinStr); // Clean up anything from scan range onwards
+                            .gte('date', dateMinStr); 
                         
                         if (dbMeetings) {
                             const staleIds = dbMeetings
@@ -1270,13 +1291,12 @@ alter publication supabase_realtime add table meetings, tasks, team_members;
                         }
                     }
 
-                    // Explicitly force a state refresh by clearing first (blink is better than stale data)
                     setMeetings([]); 
-                    await fetchData(client); 
+                    await fetchData(client);
+                    setLastSynced(new Date().toLocaleTimeString());
                     
                 } catch (e) { 
                     console.error("Sync failed:", e); 
-                    alert("Sync Error: " + e.message); 
                 } finally { 
                     setIsSyncing(false); 
                 }
@@ -1674,7 +1694,7 @@ alter publication supabase_realtime add table meetings, tasks, team_members;
             if (view === 'dashboard') {
                 return (
                     <div className="flex flex-col h-screen bg-gray-50">
-                        <AppHeader currentUser={currentUser} onLogout={handleLogout} onSync={handleSync} dbStatus={dbStatus} isSyncing={isSyncing} syncRange={syncRange} setSyncRange={setSyncRange}/>
+                        <AppHeader currentUser={currentUser} onLogout={handleLogout} onSync={handleSync} dbStatus={dbStatus} isSyncing={isSyncing} syncRange={syncRange} setSyncRange={setSyncRange} lastSynced={lastSynced}/>
                         <main className="flex-1 overflow-y-auto p-6"><div className="max-w-5xl mx-auto">
                             <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 gap-4">
                                 <div><h2 className="text-2xl font-bold text-gray-900">{dashboardViewMode === 'meetings' ? 'My Meetings' : (dashboardViewMode === 'tasks' ? 'My Tasks' : (dashboardViewMode === 'team' ? 'Team' : 'Reports'))}</h2><p className="text-gray-500 text-sm mt-1">{currentUser.name}</p></div>
