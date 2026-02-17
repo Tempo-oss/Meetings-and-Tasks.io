@@ -142,6 +142,9 @@ create table if not exists pending_emails (
     status text DEFAULT 'pending',
     created_at timestamp with time zone DEFAULT timezone('utc'::text, now()) NOT NULL
 );
+
+-- IMPORTANT: Enable Realtime for these tables so the dashboard updates instantly
+alter publication supabase_realtime add table meetings, tasks, team_members;
 `;
 
         // --- Icon Component ---
