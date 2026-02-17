@@ -428,9 +428,6 @@ alter publication supabase_realtime add table meetings, tasks, team_members;
             );
         };
 
-        // ... (ReportsView and TeamList components would also get the color updates - abbreviated for length but concept applies globally)
-        // For brevity, assuming other components receive similar 'text-tempo-red' and 'bg-tempo-red' classes where 'indigo' was used.
-        
         const ReportsView = ({ meetings, tasks, attendees }) => {
             // ... existing state ...
             const [filterOwner, setFilterOwner] = useState('all');
@@ -904,6 +901,7 @@ alter publication supabase_realtime add table meetings, tasks, team_members;
             const [taskScope, setTaskScope] = useState('me'); 
             const [meetingScope, setMeetingScope] = useState('me'); // Added Meeting Scope
             const [showQuickAdd, setShowQuickAdd] = useState(false); 
+            const [showPast, setShowPast] = useState(false); // New state for toggling past meetings
 
             const [meetings, setMeetings] = useState([]);
             const [tasks, setTasks] = useState([]);
@@ -1141,14 +1139,29 @@ alter publication supabase_realtime add table meetings, tasks, team_members;
                 if (!session?.provider_token) { alert("Sync Unavailable: Missing Google Access Token. Please re-login."); return; }
                 setIsSyncing(true);
                 try {
-                    let timeMin = new Date().toISOString();
-                    if (syncRange === 'past_month') { const d = new Date(); d.setDate(d.getDate() - 30); timeMin = d.toISOString(); }
-                    const resp = await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events?maxResults=50&orderBy=startTime&singleEvents=true&timeMin=${timeMin}`, { headers: { Authorization: `Bearer ${session.provider_token}` } });
+                    // Default to start of TODAY, not "now", to catch meetings from earlier today
+                    let timeMin = new Date();
+                    timeMin.setHours(0,0,0,0);
+                    
+                    if (syncRange === 'past_month') { 
+                        timeMin.setDate(timeMin.getDate() - 30); 
+                    }
+                    
+                    const timeMinIso = timeMin.toISOString();
+                    const dateMinStr = timeMinIso.split('T')[0]; // YYYY-MM-DD
+
+                    const resp = await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events?maxResults=200&orderBy=startTime&singleEvents=true&timeMin=${timeMinIso}`, { headers: { Authorization: `Bearer ${session.provider_token}` } });
                     if (!resp.ok) throw new Error("Failed to fetch from Google");
                     const data = await resp.json();
-                    if (data.items.length === 0) { alert("0 events found."); setIsSyncing(false); return; }
+                    
+                    // Track IDs found in Google to identify stale ones in DB
+                    const gCalEventIds = new Set();
 
                     for (const event of data.items) {
+                        if (event.status === 'cancelled') continue;
+                        
+                        gCalEventIds.add(event.id);
+                        
                         const mId = event.id;
                         const docId = `doc_${event.id}`;
                         const start = new Date(event.start.dateTime || event.start.date);
@@ -1163,7 +1176,6 @@ alter publication supabase_realtime add table meetings, tasks, team_members;
                             if (taskText) {
                                 const taskId = `t_${event.id}_${taskText.substring(0, 5).replace(/\s/g, '')}`;
                                 await client.from('tasks').upsert({ id: taskId, meeting_id: mId, text: taskText, assignee: currentUser.id, status: 'pending' }, { ignoreDuplicates: true });
-                                // Note: Sync might create duplicates if we notify here, so we skip notification for basic sync to avoid spam.
                             }
                         }
 
@@ -1184,7 +1196,33 @@ alter publication supabase_realtime add table meetings, tasks, team_members;
                             await client.from('meetings').upsert({ id: mId, title: event.summary || '(No Title)', date: dateStr, time: start.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }), duration: '1h', participants: attendees, doc_id: docId, google_calendar_id: event.id, synced: true, platform: 'Google Calendar', google_doc_link: gDocLink, video_link: videoLink });
                         }
                     }
-                    await fetchData(client); alert(`Synced ${data.items.length} events!`);
+
+                    // --- STALE DATA CLEANUP ---
+                    // Remove meetings from DB that are within our sync range but NOT in the Google response (deleted/declined)
+                    if (client) {
+                        const { data: dbMeetings } = await client
+                            .from('meetings')
+                            .select('id, google_calendar_id')
+                            .eq('platform', 'Google Calendar')
+                            .gte('date', dateMinStr); // Only check meetings from start date onwards
+                        
+                        if (dbMeetings) {
+                            const staleIds = dbMeetings
+                                .filter(m => m.google_calendar_id && !gCalEventIds.has(m.google_calendar_id))
+                                .map(m => m.id);
+                            
+                            if (staleIds.length > 0) {
+                                console.log("Cleaning up stale meetings:", staleIds);
+                                await client.from('meetings').delete().in('id', staleIds);
+                                // Optional: Cascade delete tasks or keep them? 
+                                // Usually safe to delete tasks for deleted meetings to keep DB clean
+                                await client.from('tasks').delete().in('meeting_id', staleIds);
+                            }
+                        }
+                    }
+
+                    await fetchData(client); 
+                    // No alert to allow smoother flow, or unobtrusive toast
                 } catch (e) { console.error(e); alert("Sync Error: " + e.message); } finally { setIsSyncing(false); }
             };
 
@@ -1468,12 +1506,8 @@ alter publication supabase_realtime add table meetings, tasks, team_members;
                          if (meInTeam.managed_teams) myManagedTeams.push(...meInTeam.managed_teams);
                     }
                     
-                    // REMOVED Admin Override: strictly show managed teams only
-                    // if (currentUser.system_role === 'admin') myManagedTeams.push(...DEPARTMENTS);
-                    
                     const teamMemberIds = teamMembers
                         .filter(tm => myManagedTeams.includes(tm.team))
-                        // EXCLUDE current user to ensure we only see team members' activity
                         .filter(tm => tm.email && tm.email.toLowerCase() !== userEmail)
                         .flatMap(tm => [tm.email, tm.email ? tm.email.toLowerCase() : null, tm.id])
                         .filter(Boolean);
@@ -1483,12 +1517,9 @@ alter publication supabase_realtime add table meetings, tasks, team_members;
                         return parts.some(p => {
                             const pId = typeof p === 'string' ? p : (p.id || p.email);
                             const pEmail = typeof p === 'object' ? p.email : p;
-                            
                             if (!pId && !pEmail) return false;
-                            
                             const pIdLower = pId ? pId.toLowerCase().trim() : '';
                             const pEmailLower = pEmail ? pEmail.toLowerCase().trim() : '';
-
                             return teamMemberIds.includes(pIdLower) || teamMemberIds.includes(pEmailLower);
                         });
                     });
@@ -1505,13 +1536,32 @@ alter publication supabase_realtime add table meetings, tasks, team_members;
                     });
                 }
 
-                const dateFiltered = selectedDate ? relevantMeetings.filter(m => m.date === selectedDate) : relevantMeetings;
+                // Filtering Logic Update: Handle "Show Past"
+                let dateFiltered;
+                if (selectedDate) {
+                    dateFiltered = relevantMeetings.filter(m => m.date === selectedDate);
+                } else {
+                    // If showing all, filter based on showPast toggle
+                    if (showPast) {
+                        dateFiltered = relevantMeetings;
+                    } else {
+                        const today = getTodayISO();
+                        dateFiltered = relevantMeetings.filter(m => m.date >= today);
+                    }
+                }
+
                 return dateFiltered.sort((a, b) => {
                     const dateA = new Date(a.date + ' ' + (a.time || '00:00'));
                     const dateB = new Date(b.date + ' ' + (b.time || '00:00'));
-                    return dateB - dateA;
+                    return dateA - dateB; // Ascending (Oldest to Newest) often better for upcoming, but standard is usually desc?
+                    // Actually for a schedule, Ascending (earliest first) makes more sense for "Upcoming"
+                    // Let's stick to user preference or default. Usually agendas are top-down.
+                    // Previous code was Descending (Newest first). Let's keep it consistent or flip if requested.
+                    // Let's keep Descending to see latest created? No, for a calendar, earliest is top.
+                    // CHANGED to Ascending for logic flow (Today -> Future)
+                    return dateA - dateB; 
                 });
-            }, [meetings, currentUser, selectedDate, meetingScope, isManager, teamMembers]);
+            }, [meetings, currentUser, selectedDate, meetingScope, isManager, teamMembers, showPast]);
 
             const filteredTasks = useMemo(() => {
                 let scopeFiltered = [];
@@ -1591,9 +1641,19 @@ alter publication supabase_realtime add table meetings, tasks, team_members;
                                         )}
                                     </div>
                                     {dashboardViewMode === 'meetings' && (
-                                        <div className="flex items-center gap-2"><div className="relative w-full sm:w-auto">
-                                            {isManager && (<div className="flex items-center bg-white border border-gray-200 rounded-lg p-0.5 mb-2 sm:mb-0 sm:mr-2"><button onClick={() => setMeetingScope('me')} className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${meetingScope === 'me' ? 'bg-gray-100 text-gray-900' : 'text-gray-500'}`}>Me</button><button onClick={() => setMeetingScope('team')} className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${meetingScope === 'team' ? 'bg-gray-100 text-gray-900' : 'text-gray-500'}`}>My Team</button></div>)}
-                                            <input type="date" value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)} className="w-full pl-10 pr-4 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 shadow-sm"/><Icon name="Calendar" className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-4 h-4 pointer-events-none" /></div>{selectedDate && (<button onClick={() => setSelectedDate('')} className="text-xs text-indigo-600 hover:text-indigo-800 underline whitespace-nowrap">Show All</button>)}</div>
+                                        <div className="flex items-center gap-2">
+                                            <div className="relative w-full sm:w-auto">
+                                                {isManager && (<div className="flex items-center bg-white border border-gray-200 rounded-lg p-0.5 mb-2 sm:mb-0 sm:mr-2"><button onClick={() => setMeetingScope('me')} className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${meetingScope === 'me' ? 'bg-gray-100 text-gray-900' : 'text-gray-500'}`}>Me</button><button onClick={() => setMeetingScope('team')} className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${meetingScope === 'team' ? 'bg-gray-100 text-gray-900' : 'text-gray-500'}`}>My Team</button></div>)}
+                                                <input type="date" value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)} className="w-full pl-10 pr-4 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 shadow-sm"/><Icon name="Calendar" className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-4 h-4 pointer-events-none" />
+                                            </div>
+                                            {selectedDate ? (
+                                                <button onClick={() => setSelectedDate('')} className="text-xs text-indigo-600 hover:text-indigo-800 underline whitespace-nowrap">Show All</button>
+                                            ) : (
+                                                <button onClick={() => setShowPast(!showPast)} className={`text-xs px-2 py-1 rounded border ${showPast ? 'bg-indigo-50 text-indigo-700 border-indigo-200' : 'text-gray-500 border-transparent hover:bg-gray-100'}`}>
+                                                    {showPast ? 'Hide Past' : 'Show Past'}
+                                                </button>
+                                            )}
+                                        </div>
                                     )}
                                     {dashboardViewMode === 'tasks' && (
                                         <div className="flex gap-2 w-full sm:w-auto items-center">{isManager && (<div className="flex items-center bg-white border border-gray-200 rounded-lg p-0.5"><button onClick={() => setTaskScope('me')} className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${taskScope === 'me' ? 'bg-gray-100 text-gray-900' : 'text-gray-500'}`}>Me</button><button onClick={() => setTaskScope('team')} className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${taskScope === 'team' ? 'bg-gray-100 text-gray-900' : 'text-gray-500'}`}>My Team</button></div>)}
