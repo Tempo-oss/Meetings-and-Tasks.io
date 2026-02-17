@@ -1089,9 +1089,9 @@ create table if not exists pending_emails (
                 }
             };
 
-            const fetchData = async (sbClient = client) => {
+            const fetchData = async (sbClient = client, isBackground = false) => {
                 if (!sbClient) return;
-                setDbStatus('connecting');
+                if (!isBackground) setDbStatus('connecting');
                 try {
                     const { error: checkError } = await sbClient.from('meetings').select('id').limit(1);
                     if (checkError && (checkError.code === 'PGRST205' || checkError.code === '42P01')) throw { code: 'TABLE_MISSING' };
@@ -1119,6 +1119,20 @@ create table if not exists pending_emails (
                     if (err.code === 'TABLE_MISSING') setDbStatus('setup_required'); else { console.error(err); setDbStatus('error'); setErrorMsg(err.message); }
                 }
             };
+
+            useEffect(() => {
+                if (!supabaseClient || !session) return;
+
+                const channel = supabaseClient.channel('realtime_updates')
+                    .on('postgres_changes', { event: '*', schema: 'public', table: 'meetings' }, () => fetchData(supabaseClient, true))
+                    .on('postgres_changes', { event: '*', schema: 'public', table: 'tasks' }, () => fetchData(supabaseClient, true))
+                    .on('postgres_changes', { event: '*', schema: 'public', table: 'team_members' }, () => fetchData(supabaseClient, true))
+                    .subscribe();
+
+                return () => {
+                    supabaseClient.removeChannel(channel);
+                };
+            }, [supabaseClient, session]);
 
             const handleSync = async () => {
                 if (!session?.provider_token) { alert("Sync Unavailable: Missing Google Access Token. Please re-login."); return; }
