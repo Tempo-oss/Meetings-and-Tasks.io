@@ -67,7 +67,7 @@
     <div id="root" class="h-full"></div>
 
     <script type="text/babel">
-        const { useState, useEffect, useRef, useMemo } = React;
+        const { useState, useEffect, useRef, useMemo, useCallback } = React;
 
         // --- Configuration ---
         const SUPABASE_URL = 'https://yasoowbpyknuikdvlahz.supabase.co';
@@ -94,8 +94,9 @@
         const ADMIN_EMAILS = ['mohamed.abdelmagid@tempo.fit', 'halim@tempo.fit', 'nancy@tempo.fit'];
 
         const SQL_SETUP_INSTRUCTIONS = `
--- Run these commands in your Supabase SQL Editor:
+-- Run these commands in your Supabase SQL Editor to fix permissions and missing columns:
 
+-- 1. Create Tables (Safe to run, will skip if they exist)
 create table if not exists meetings (
     id text primary key,
     title text,
@@ -143,14 +144,23 @@ create table if not exists pending_emails (
     created_at timestamp with time zone DEFAULT timezone('utc'::text, now()) NOT NULL
 );
 
--- CRITICAL: Disable RLS for prototype to allow writes, OR add policies
+-- 2. FIX MISSING COLUMNS (This prevents the "video_link column not found" error)
+alter table meetings add column if not exists video_link text;
+alter table meetings add column if not exists google_doc_link text;
+
+-- 3. Disable RLS to allow writing
 alter table meetings disable row level security;
 alter table tasks disable row level security;
 alter table team_members disable row level security;
 alter table pending_emails disable row level security;
 
--- Enable Realtime
-alter publication supabase_realtime add table meetings, tasks, team_members;
+-- 4. Safely Enable Realtime (Checks first to avoid "already member" error)
+do $$
+begin
+  if not exists (select 1 from pg_publication_tables where pubname = 'supabase_realtime' and tablename = 'meetings') then
+    alter publication supabase_realtime add table meetings, tasks, team_members;
+  end if;
+end $$;
 `;
 
         // --- Icon Component ---
@@ -924,12 +934,33 @@ alter publication supabase_realtime add table meetings, tasks, team_members;
             const [isSyncing, setIsSyncing] = useState(false);
             const [supabaseClient, setSupabaseClient] = useState(null);
 
+            // --- NOTIFICATION BUFFERS ---
+            const assignmentBuffer = useRef([]);
+            const completionBuffer = useRef([]);
+            const assignmentTimeout = useRef(null);
+            const completionTimeout = useRef(null);
+
             useEffect(() => {
                 if (window.supabase) {
                     const client = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
                     setSupabaseClient(client);
                 }
             }, []);
+
+            // Deep Linking for Meetings
+            useEffect(() => {
+                const params = new URLSearchParams(window.location.search);
+                const mId = params.get('meetingId');
+                if (mId && meetings.length > 0) {
+                    const target = meetings.find(m => m.id === mId);
+                    if (target) {
+                        setSelectedMeetingId(mId);
+                        setView('meeting');
+                        // Clean URL without reload
+                        window.history.replaceState({}, document.title, window.location.pathname);
+                    }
+                }
+            }, [meetings]);
 
             useEffect(() => {
                 if (!supabaseClient) { 
@@ -979,121 +1010,152 @@ alter publication supabase_realtime add table meetings, tasks, team_members;
                 });
             };
 
-            // -- NOTIFICATION HELPERS --
-            const handleTaskCreationNotifications = async (task) => {
-                if (!client || !task.assignee) return;
-                
-                const assigneeId = task.assignee;
-                // Don't notify self of assignment, but DO check for immediate reminders if required
-                const isSelf = assigneeId === currentUser?.id;
-                
-                const user = teamMembers.find(u => u.email === assigneeId || u.id === assigneeId) || colleagues.find(c => c.email === assigneeId || c.id === assigneeId);
-                const email = user ? user.email : (assigneeId.includes('@') ? assigneeId : null);
-                const name = user ? user.name : "there";
-                
-                if (!email) return;
-
-                // 1. Assignment Notification
-                if (!isSelf) {
-                    await queueEmail(email, `New Task Assigned: ${task.text}`, `Hi ${name},\n\nYou have been assigned a new task: "${task.text}".\nStart: ${task.start_date || 'N/A'}\nDue: ${task.end_date || 'N/A'}\n\n- MeetingMate`);
-                }
-
-                // 2. Immediate Due Date Reminder (< 2 days from creation)
-                if (task.end_date) {
-                    const today = new Date();
-                    today.setHours(0,0,0,0);
-                    const due = new Date(task.end_date);
-                    due.setHours(0,0,0,0);
-                    const diffDays = (due - today) / (1000 * 60 * 60 * 24);
-                    
-                    if (diffDays <= 2) {
-                         await queueEmail(email, `Reminder: Task Due Soon`, `Hi ${name},\n\nThis is an immediate reminder that the task "${task.text}" created just now is due on ${task.end_date} (within 2 days).\n\n- MeetingMate`);
-                         // Update DB to say reminder sent so polling doesn't send it again
-                         await client.from('tasks').update({ reminder_sent: true }).eq('id', task.id);
-                    }
-                }
-            };
-
-            const handleGoogleLogin = async () => { if (!client) return; const { error } = await client.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: window.location.href, scopes: 'https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/documents.readonly' } }); if (error) alert(error.message); };
-            const handleEmailLogin = async (email) => { if (!client) return; const { error } = await client.auth.signInWithOtp({ email, options: { emailRedirectTo: window.location.href } }); if (error) alert(error.message); };
-            const handlePasswordLogin = async (email, password) => { if (!client) return; const { error } = await client.auth.signInWithPassword({ email, password }); if (error) alert(error.message); };
-            const handleSignUp = async (email, password) => { if (!client) return; const { error } = await client.auth.signUp({ email, password, options: { data: { full_name: email.split('@')[0] } } }); if (error) alert(error.message); else alert("Sign up successful! Please check your email."); };
-            const handlePasswordReset = async (email) => { if (!client) return; const { error } = await client.auth.resetPasswordForEmail(email, { redirectTo: window.location.href }); if (error) alert(error.message); else alert("Password reset email sent!"); };
-            const handleUpdatePassword = async (newPassword) => { if (!client) return; const { error } = await client.auth.updateUser({ password: newPassword }); if (error) alert(error.message); else { alert("Password updated successfully!"); setView('dashboard'); fetchData(client); } };
+            // --- BATCH NOTIFICATION LOGIC ---
             
-            const handleLogout = async () => { 
-                if (!client) return; 
-                try { await client.auth.signOut(); } catch (error) { console.error("Sign out error:", error); } 
-                finally { setSession(null); setCurrentUser(null); setMeetings([]); setTasks([]); setTeamMembers([]); setView('dashboard'); setSelectedMeetingId(null); } 
-            };
+            // 1. Flush Assignments (Group by Assignee -> Meeting)
+            const flushAssignmentNotifications = useCallback(async () => {
+                if (assignmentBuffer.current.length === 0) return;
+                const tasksToProcess = [...assignmentBuffer.current];
+                assignmentBuffer.current = []; // Clear buffer
 
-            const handleRemoveTeamMember = async (email) => {
-                if (!confirm(`Are you sure you want to remove ${email}?`)) return;
-                setTeamMembers(prev => prev.filter(m => m.email !== email));
-                if (dbStatus === 'connected' && client) {
-                    try { const { error } = await client.from('team_members').delete().eq('email', email); if (error) throw error; } catch (e) { console.error(e); alert("Failed to remove member"); }
-                }
-            };
+                // Group by Assignee Email
+                const tasksByAssignee = {};
+                for (const item of tasksToProcess) {
+                    const { task, meetingTitle, meetingId } = item;
+                    const assigneeId = task.assignee;
+                    if (!assigneeId || assigneeId === currentUser?.id) continue; // Skip self
 
-            const handleDeleteAllTasks = async () => {
-                if (!confirm("⚠️ DANGER ZONE ⚠️\n\nAre you sure you want to delete ALL tasks in the system? This cannot be undone.")) return;
-                
-                // Clear local state
-                setTasks([]);
-
-                if (dbStatus === 'connected' && client) {
-                    // Supabase requires a filter for delete. using id.neq.0 deletes everything if ids are strings/uuids usually, 
-                    // but since ids are strings here ("t_..."), we can try a broad filter. 
-                    // Actually, Supabase JS requires a filter. `neq('id', 'placeholder')` usually works.
-                    const { error } = await client.from('tasks').delete().neq('id', 'placeholder');
-                    if (error) {
-                        console.error(error);
-                        alert("Failed to delete from database: " + error.message);
-                        fetchData(client); // restore
-                    } else {
-                        alert("All tasks deleted successfully.");
+                    const user = teamMembers.find(u => u.email === assigneeId || u.id === assigneeId) || colleagues.find(c => c.email === assigneeId || c.id === assigneeId);
+                    const email = user ? user.email : (assigneeId.includes('@') ? assigneeId : null);
+                    
+                    if (email) {
+                        if (!tasksByAssignee[email]) tasksByAssignee[email] = [];
+                        tasksByAssignee[email].push({ ...task, meetingTitle, meetingId, assigneeName: user ? user.name : 'there' });
                     }
                 }
+
+                // Send Emails
+                for (const [email, tasks] of Object.entries(tasksByAssignee)) {
+                    const name = tasks[0].assigneeName;
+                    const count = tasks.length;
+                    const meetingTitle = tasks[0].meetingTitle; // Assuming batch is usually per meeting, but handle mixed
+                    
+                    // Group by meeting inside the email if needed
+                    const meetingsMap = {};
+                    tasks.forEach(t => {
+                        const mId = t.meetingId || 'standalone';
+                        if(!meetingsMap[mId]) meetingsMap[mId] = { title: t.meetingTitle || 'Personal Tasks', tasks: [] };
+                        meetingsMap[mId].tasks.push(t);
+                    });
+
+                    let body = `Hi ${name},\n\nYou have ${count} new action item(s):\n\n`;
+                    
+                    Object.entries(meetingsMap).forEach(([mId, data]) => {
+                        body += `--- ${data.title} ---\n`;
+                        data.tasks.forEach(t => {
+                            body += `[ ] ${t.text} (Due: ${t.end_date || 'No Date'})\n`;
+                        });
+                        // Add Link
+                        const link = `${window.location.origin}${window.location.pathname}?meetingId=${mId}`;
+                        body += `View Meeting: ${link}\n\n`;
+                    });
+                    
+                    body += `\n- MeetingMate`;
+                    
+                    const subject = count === 1 
+                        ? `New Action Item: ${tasks[0].text.substring(0,30)}...` 
+                        : `You have ${count} new action items`;
+
+                    await queueEmail(email, subject, body);
+                }
+            }, [client, teamMembers, colleagues, currentUser]);
+
+            // 2. Flush Completions (Group by Manager)
+            const flushCompletionNotifications = useCallback(async () => {
+                if (completionBuffer.current.length === 0) return;
+                const tasksToProcess = [...completionBuffer.current];
+                completionBuffer.current = [];
+
+                // Find manager for each task assignee and group
+                const tasksByManager = {};
+
+                for (const item of tasksToProcess) {
+                    const { task, meetingTitle } = item;
+                    const assigneeId = task.assignee;
+                    const assigneeUser = teamMembers.find(m => m.email === assigneeId || m.id === assigneeId) || colleagues.find(c => c.email === assigneeId || c.id === assigneeId);
+
+                    if (assigneeUser && assigneeUser.team) {
+                        // Find manager
+                        const manager = teamMembers.find(m => (m.team === assigneeUser.team && m.role === 'Owner') || (m.managed_teams && m.managed_teams.includes(assigneeUser.team)));
+                        if (manager && manager.email) {
+                            if (!tasksByManager[manager.email]) tasksByManager[manager.email] = { managerName: manager.name, items: [] };
+                            tasksByManager[manager.email].items.push({ task, doer: assigneeUser.name, meetingTitle });
+                        }
+                    }
+                }
+
+                // Send Emails
+                for (const [email, data] of Object.entries(tasksByManager)) {
+                    const count = data.items.length;
+                    let body = `Hi ${data.managerName},\n\nYour team has completed ${count} action item(s):\n\n`;
+                    
+                    data.items.forEach(i => {
+                        body += `✔ ${i.doer} completed: "${i.task.text}" (${i.meetingTitle})\n`;
+                    });
+                    
+                    // General Dashboard Link for manager
+                    const link = `${window.location.origin}${window.location.pathname}`;
+                    body += `\nView Dashboard: ${link}\n\n- MeetingMate`;
+
+                    await queueEmail(email, `Update: ${count} Task(s) Completed`, body);
+                }
+            }, [client, teamMembers, colleagues]);
+
+
+            // -- TRIGGERS --
+
+            // Trigger for New Tasks (Buffered)
+            const scheduleAssignmentNotification = (task, meetingTitle, meetingId) => {
+                assignmentBuffer.current.push({ task, meetingTitle, meetingId });
+                if (assignmentTimeout.current) clearTimeout(assignmentTimeout.current);
+                // Wait 10 seconds to collect batch
+                assignmentTimeout.current = setTimeout(flushAssignmentNotifications, 10000); 
             };
 
+            // Trigger for Completed Tasks (Buffered)
+            const scheduleCompletionNotification = (task, meetingTitle) => {
+                completionBuffer.current.push({ task, meetingTitle });
+                if (completionTimeout.current) clearTimeout(completionTimeout.current);
+                // Wait 60 seconds to collect multiple check-offs
+                completionTimeout.current = setTimeout(flushCompletionNotifications, 60000);
+            };
+
+            // Immediate reminder (keep this separate as it's urgent)
             const checkAndSendReminders = async (currentTasks, currentTeam) => {
                 if (!client) return;
                 const today = new Date();
                 today.setHours(0,0,0,0);
-                
-                // Look ahead 2 days
                 const twoDaysFromNow = new Date(today);
                 twoDaysFromNow.setDate(today.getDate() + 2);
                 
-                // Filter for tasks due within the window [today, today+2]
-                // that haven't had a reminder sent yet
                 const tasksDueSoon = currentTasks.filter(t => {
                     if (!t.end_date) return false;
                     const due = new Date(t.end_date);
                     due.setHours(0,0,0,0);
-                    
                     return due <= twoDaysFromNow && due >= today && 
                            !t.done && t.status !== 'completed' &&
                            t.reminder_sent !== true; 
                 });
 
                 if (tasksDueSoon.length > 0) {
-                    console.log(`Found ${tasksDueSoon.length} tasks due soon.`);
-                    
                     for (const task of tasksDueSoon) {
                         const assigneeId = task.assignee;
                         if (!assigneeId) continue;
-
                         const user = currentTeam.find(u => u.email === assigneeId || u.id === assigneeId);
                         const email = user ? user.email : (assigneeId.includes('@') ? assigneeId : null);
                         const name = user ? user.name : "there";
-
                         if (email) {
-                            await queueEmail(
-                                email,
-                                `Reminder: Task Due Soon`,
-                                `Hi ${name},\n\nJust a reminder that the task "${task.text}" is due on ${task.end_date}.\n\n- MeetingMate`
-                            );
+                            await queueEmail(email, `Reminder: Task Due Soon`, `Hi ${name},\n\nJust a reminder that the task "${task.text}" is due on ${task.end_date}.\n\n- MeetingMate`);
                             await client.from('tasks').update({ reminder_sent: true }).eq('id', task.id);
                         }
                     }
@@ -1315,13 +1377,9 @@ alter publication supabase_realtime add table meetings, tasks, team_members;
                     const docData = await resp.json();
                     
                     // --- HELPERS ---
-                    
-                    // 1. Flatten the document structure into a simple list of paragraphs
-                    // This is CRITICAL because Meeting Notes templates often put Date and Tasks in the SAME table.
                     const flattenDoc = (content) => {
                         let nodes = [];
                         if (!content) return nodes;
-                        
                         content.forEach(elem => {
                             if (elem.paragraph) {
                                 nodes.push(elem.paragraph);
@@ -1337,7 +1395,6 @@ alter publication supabase_realtime add table meetings, tasks, team_members;
                     };
 
                     const findUserInText = (text, richTextElements) => {
-                        // Priority 1: Smart Chips
                         if (richTextElements && richTextElements.length > 0) {
                             for (const el of richTextElements) {
                                 if (el.person?.personProperties?.email) {
@@ -1350,11 +1407,9 @@ alter publication supabase_realtime add table meetings, tasks, team_members;
                                 }
                             }
                         }
-                        // Priority 2: Text matching
                         const lowerText = text.toLowerCase().replace(/\u00A0/g, ' ');
                         const allUsers = [...teamMembers, ...((meeting.participants || []).map(p => typeof p === 'string' ? {name:p, id:p} : p))];
                         allUsers.sort((a, b) => (b.name?.length || 0) - (a.name?.length || 0)); 
-
                         for (const u of allUsers) {
                             if (u.name) {
                                 const name = u.name.toLowerCase();
@@ -1369,82 +1424,59 @@ alter publication supabase_realtime add table meetings, tasks, team_members;
                     // --- EXECUTION ---
                     const flatNodes = flattenDoc(docData.body?.content);
                     
-                    // PASS 1: Find the index of the MOST RECENT valid date (>= 2023)
                     let startIndex = 0;
                     let foundDateStr = null;
                     let maxTimestamp = 0;
                     
                     flatNodes.forEach((node, idx) => {
                         const txt = node.elements.map(e => e.textRun?.content || '').join('').trim();
-                        // Regex for standard dates + "Feb 12, 2026"
                         const dateMatch = txt.match(/\b(?:\d{4}-\d{2}-\d{2}|\d{1,2}\/\d{1,2}\/\d{4}|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s\d{1,2}(?:st|nd|rd|th)?(?:,?\s\d{4})?)\b/i);
-                        
                         if (dateMatch) {
                             const ts = Date.parse(dateMatch[0]);
                             if (!isNaN(ts)) {
-                                // STRICT FILTER: Only consider dates after Jan 1, 2023
                                 if (ts > new Date('2023-01-01').getTime() && ts > maxTimestamp) {
                                     maxTimestamp = ts;
-                                    startIndex = idx + 1; // Start scanning paragraphs immediately following the date
+                                    startIndex = idx + 1; 
                                     foundDateStr = new Date(ts).toISOString().split('T')[0];
                                 }
                             }
                         }
                     });
 
-                    // PASS 2: Scan for tasks starting from the calculated index
                     const scanNodesForTasks = (startIdx) => {
                         const results = [];
                         for (let i = startIdx; i < flatNodes.length; i++) {
                             const paraNode = flatNodes[i];
-                            
-                            // Check for separators (if we hit a horizontal rule inside this paragraph)
                             if (paraNode.elements?.some(e => e.horizontalRule)) break;
 
-                            // 1. Extract Raw Text & Rich Elements
                             let paraText = '';
                             let richElements = [];
-                            
                             paraNode.elements.forEach(pElem => {
                                 if (pElem.textRun) paraText += pElem.textRun.content;
                                 if (pElem.person) richElements.push(pElem);
                             });
                             
                             let rawText = paraText.replace(/\u00A0/g, ' ').trim();
-
-                            // EXCLUSION: Skip lines that are likely metadata (Attendees, etc.) even if they contain people
                             if (/^(attendees|participants|guests|cc|to):/i.test(rawText)) continue;
 
-                            // 2. Identify if it's a Task
-                            // It is a task if: It has a bullet OR it has a manual checkbox OR it has a Person Chip at the start
                             const isBullet = !!paraNode.bullet;
                             const manualCheckboxRegex = /^(\[ ?\]|\( ?\)|\u2610|\u2611)\s*/;
                             const isManualCheckbox = manualCheckboxRegex.test(rawText);
                             const hasPersonChip = richElements.length > 0;
 
                             if (isBullet || isManualCheckbox || hasPersonChip) {
-                                // 3. Clean the text
-                                let cleanText = rawText
-                                    .replace(manualCheckboxRegex, '') // Remove [ ]
-                                    .replace(/^\u25CF\s*/, '') // Remove bullet dot char
-                                    .trim();
+                                let cleanText = rawText.replace(manualCheckboxRegex, '').replace(/^\u25CF\s*/, '').trim();
 
                                 if (cleanText.length > 1) {
                                     const assignedTo = findUserInText(cleanText, richElements);
-                                    
                                     if (assignedTo) {
                                         const assignedUser = [...teamMembers, ...((meeting.participants || []).map(p => typeof p === 'string' ? {name:p, id:p} : p))].find(u => (u.id === assignedTo || u.email === assignedTo));
-                                        
-                                        // Remove name from text (e.g., "Rashad Mohamed Create..." -> "Create...")
                                         if (assignedUser && assignedUser.name) {
                                             const escapedName = assignedUser.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
                                             const nameRegex = new RegExp(`^@?${escapedName}\\s*`, 'i');
                                             cleanText = cleanText.replace(nameRegex, '').trim();
                                         }
-                                        
-                                        // Remove separators like ":" or "-"
                                         cleanText = cleanText.replace(/^[:\-–—]\s*/, '').trim();
-                                        
                                         if (cleanText) {
                                             results.push({ text: cleanText, assignee: assignedTo });
                                         }
@@ -1458,7 +1490,6 @@ alter publication supabase_realtime add table meetings, tasks, team_members;
                     let tasksFound = scanNodesForTasks(startIndex);
                     let usedDateFallback = false;
 
-                    // FALLBACK: If date found but no tasks, scan whole doc (maybe date was at bottom?)
                     if (foundDateStr && tasksFound.length === 0) {
                         console.log("No tasks found under date " + foundDateStr + ". Retrying full doc scan.");
                         tasksFound = scanNodesForTasks(0);
@@ -1471,8 +1502,6 @@ alter publication supabase_realtime add table meetings, tasks, team_members;
                     else {
                         let createdCount = 0;
                         const taskStartDate = (!usedDateFallback && foundDateStr) ? foundDateStr : (meeting.date || getTodayISO()); 
-                        
-                        // Prevent Duplicates: Check against existing tasks for this meeting
                         const existingTexts = new Set(tasks.filter(t => t.meetingId === meeting.id).map(t => t.text.trim().toLowerCase()));
 
                         for (const task of tasksFound) {
@@ -1486,11 +1515,11 @@ alter publication supabase_realtime add table meetings, tasks, team_members;
                              
                              if (client) { 
                                  await client.from('tasks').insert(newTaskObj); 
-                                 // NOTIFICATION: Trigger for imported tasks
-                                 await handleTaskCreationNotifications(newTaskObj);
+                                 // BUFFERED Notification
+                                 scheduleAssignmentNotification(newTaskObj, meeting.title, meeting.id);
                              }
                              
-                             existingTexts.add(normalizedText); // Add to set to prevent duplicates within the same import batch
+                             existingTexts.add(normalizedText); 
                              createdCount++;
                         }
                         
@@ -1519,27 +1548,17 @@ alter publication supabase_realtime add table meetings, tasks, team_members;
             };
 
             const handleUpdateTask = async (taskId, updates) => {
+                const task = tasks.find(t => t.id === taskId);
+                const meeting = meetings.find(m => m.id === task?.meetingId);
+                
                 setTasks(prev => prev.map(t => t.id === taskId ? { ...t, ...updates } : t));
                 if (dbStatus === 'connected' && client) { 
                     await client.from('tasks').update(updates).eq('id', taskId); 
                     
-                    // COMPLETION NOTIFICATION
+                    // COMPLETION NOTIFICATION (Buffered)
                     if (updates.status === 'completed' || updates.done === true) {
-                        const task = tasks.find(t => t.id === taskId);
                         if (task) {
-                            const assigneeId = task.assignee;
-                            const assigneeUser = teamMembers.find(m => m.email === assigneeId || m.id === assigneeId) || colleagues.find(c => c.email === assigneeId || c.id === assigneeId);
-                            if (assigneeUser && assigneeUser.team) {
-                                // Find manager of the team
-                                const manager = teamMembers.find(m => (m.team === assigneeUser.team && m.role === 'Owner') || (m.managed_teams && m.managed_teams.includes(assigneeUser.team)));
-                                if (manager && manager.email) { 
-                                    queueEmail(
-                                        manager.email, 
-                                        `Task Completed: ${task.text}`, 
-                                        `Hi ${manager.name},\n\n${assigneeUser.name} has completed the task: "${task.text}".\n\n- MeetingMate`
-                                    ); 
-                                }
-                            }
+                            scheduleCompletionNotification(task, meeting?.title || 'Unknown Meeting');
                         }
                     }
                 }
@@ -1554,7 +1573,7 @@ alter publication supabase_realtime add table meetings, tasks, team_members;
                 if (dbStatus === 'connected' && client) { 
                     client.from('tasks').insert(newTask).then(({error}) => { 
                         if(error) console.error("Error", error); 
-                        else handleTaskCreationNotifications(newTask); // NOTIFICATION: Trigger for personal/manual tasks
+                        else scheduleAssignmentNotification(newTask, 'Personal Task', 'standalone'); // BUFFERED
                     }); 
                 }
                 setShowQuickAdd(false);
@@ -1814,7 +1833,7 @@ alter publication supabase_realtime add table meetings, tasks, team_members;
                             if (dbStatus === 'connected' && client) { 
                                 client.from('tasks').insert(newTaskObj).then(() => {
                                     // NOTIFICATION: Trigger for meeting tasks
-                                    handleTaskCreationNotifications(newTaskObj);
+                                    scheduleAssignmentNotification(newTaskObj, m.title, m.id);
                                 }); 
                             } 
                         }} 
