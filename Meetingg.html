@@ -132,7 +132,8 @@ create table if not exists tasks (
     obstacles text,
     start_date date,
     end_date date,
-    reminder_sent boolean default false
+    reminder_sent boolean default false,
+    deleted boolean default false
 );
 
 create table if not exists team_members (
@@ -158,6 +159,7 @@ create table if not exists pending_emails (
 alter table meetings add column if not exists video_link text;
 alter table meetings add column if not exists google_doc_link text;
 alter table tasks add column if not exists assigner text;
+alter table tasks add column if not exists deleted boolean default false;
 
 -- 3. Disable RLS to allow writing
 alter table meetings disable row level security;
@@ -216,7 +218,8 @@ end $$;
                 Key: <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4" />,
                 Download: <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4 M7 10l5 5 5-5 M12 15V3" />,
                 Edit: <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7 M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />,
-                Send: <path d="M22 2L11 13 M22 2l-7 20-4-9-9-4 20-7z" />
+                Send: <path d="M22 2L11 13 M22 2l-7 20-4-9-9-4 20-7z" />,
+                RotateCcw: <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
             };
 
             if (name === 'Google') {
@@ -385,7 +388,7 @@ end $$;
             );
         };
 
-        const TaskCard = ({ task, meetingTitle, onStatusChange, onObstacleChange, onDateChange, currentUser, onDelete, onUpdateText }) => {
+        const TaskCard = ({ task, meetingTitle, onStatusChange, onObstacleChange, onDateChange, currentUser, onDelete, onUpdateText, onRestore, isTrash }) => {
             const [isExpanded, setIsExpanded] = useState(false);
             const [isEditingText, setIsEditingText] = useState(false);
             const [editedText, setEditedText] = useState(task.text);
@@ -397,7 +400,9 @@ end $$;
             
             const handleIconClick = (e) => {
                 e.stopPropagation();
-                onStatusChange(task.id, isCompleted ? 'pending' : 'completed');
+                if (!isTrash) {
+                    onStatusChange(task.id, isCompleted ? 'pending' : 'completed');
+                }
             };
 
             const handleTextSave = (e) => {
@@ -409,7 +414,7 @@ end $$;
             };
 
             return (
-                <div className={`bg-white border ${isCompleted ? 'border-green-100 bg-green-50/20' : 'border-gray-200'} rounded-lg transition-all duration-200 hover:shadow-md mb-3`}>
+                <div className={`bg-white border ${isTrash ? 'border-gray-200 opacity-75' : (isCompleted ? 'border-green-100 bg-green-50/20' : 'border-gray-200')} rounded-lg transition-all duration-200 hover:shadow-md mb-3`}>
                     {/* Collapsed View / Header */}
                     <div 
                         className="flex items-start p-3 cursor-pointer group" 
@@ -417,9 +422,9 @@ end $$;
                     >
                         {/* Checkbox Icon */}
                         <div 
-                            className={`mt-0.5 mr-3 flex-shrink-0 transition-colors ${isCompleted ? 'text-green-500 hover:text-green-600' : 'text-gray-300 hover:text-tempo-red'}`}
+                            className={`mt-0.5 mr-3 flex-shrink-0 transition-colors ${isTrash ? 'text-gray-300' : (isCompleted ? 'text-green-500 hover:text-green-600' : 'text-gray-300 hover:text-tempo-red')}`}
                             onClick={handleIconClick}
-                            title={isCompleted ? "Mark as pending" : "Mark as completed"}
+                            title={isTrash ? "Restoring..." : (isCompleted ? "Mark as pending" : "Mark as completed")}
                         >
                             {isCompleted ? (
                                 <Icon name="CheckCircle2" className="w-5 h-5 fill-green-50" />
@@ -443,9 +448,9 @@ end $$;
                                     <button onClick={handleTextSave} className="text-green-600 hover:text-green-700"><Icon name="CheckCircle2" className="w-4 h-4"/></button>
                                 </div>
                             ) : (
-                                <div className={`text-sm ${isCompleted ? 'text-gray-400 line-through decoration-gray-300' : 'text-gray-900 font-medium'}`}>
+                                <div className={`text-sm ${isCompleted || isTrash ? 'text-gray-400 line-through decoration-gray-300' : 'text-gray-900 font-medium'}`}>
                                     {task.text}
-                                    {isAdmin && (
+                                    {isAdmin && !isTrash && (
                                         <button 
                                             onClick={(e) => { e.stopPropagation(); setIsEditingText(true); }}
                                             className="ml-2 text-gray-300 hover:text-indigo-500 opacity-0 group-hover:opacity-100 transition-opacity"
@@ -479,25 +484,34 @@ end $$;
                                             Assigned by you
                                         </span>
                                     )}
-                                    {task.obstacles && (
-                                        <span className="flex items-center text-orange-400">
-                                            <Icon name="AlertCircle" className="w-3 h-3 mr-1" />
-                                            Note
+                                    {isTrash && (
+                                        <span className="text-[10px] bg-red-50 text-red-600 px-1.5 py-0.5 rounded border border-red-100">
+                                            Deleted
                                         </span>
                                     )}
                                 </div>
                             )}
                         </div>
 
-                        {/* Admin Delete Action */}
-                        {isAdmin && (
+                        {/* Actions */}
+                        {isTrash ? (
                             <button 
-                                onClick={(e) => { e.stopPropagation(); onDelete(task.id); }}
-                                className="mr-2 text-gray-300 hover:text-red-500 transition-colors opacity-0 group-hover:opacity-100"
-                                title="Delete Task (Admin Only)"
+                                onClick={(e) => { e.stopPropagation(); onRestore(task.id); }}
+                                className="mr-2 text-green-500 hover:text-green-700 transition-colors"
+                                title="Restore Task"
                             >
-                                <Icon name="Trash2" className="w-4 h-4" />
+                                <Icon name="RotateCcw" className="w-4 h-4" />
                             </button>
+                        ) : (
+                            isAdmin && (
+                                <button 
+                                    onClick={(e) => { e.stopPropagation(); onDelete(task.id); }}
+                                    className="mr-2 text-gray-300 hover:text-red-500 transition-colors opacity-0 group-hover:opacity-100"
+                                    title="Delete Task (Admin Only)"
+                                >
+                                    <Icon name="Trash2" className="w-4 h-4" />
+                                </button>
+                            )
                         )}
 
                         {/* Expand Chevron */}
@@ -514,18 +528,20 @@ end $$;
                                 {/* Meta Controls Row */}
                                 <div className="flex flex-wrap gap-4 text-xs">
                                     {/* Status Select */}
-                                    <div className="flex flex-col gap-1">
-                                        <label className="font-semibold text-gray-400 uppercase tracking-wider text-[10px]">Status</label>
-                                        <select
-                                            value={currentStatus}
-                                            onChange={(e) => onStatusChange(task.id, e.target.value)}
-                                            className={`border rounded px-2 py-1.5 outline-none focus:ring-1 focus:ring-tempo-red ${currentStatus === 'completed' ? 'text-green-700 bg-green-50 border-green-200' : 'text-gray-700 bg-gray-50 border-gray-200'}`}
-                                            onClick={(e) => e.stopPropagation()}
-                                        >
-                                            <option value="pending">Pending</option>
-                                            <option value="completed">Completed</option>
-                                        </select>
-                                    </div>
+                                    {!isTrash && (
+                                        <div className="flex flex-col gap-1">
+                                            <label className="font-semibold text-gray-400 uppercase tracking-wider text-[10px]">Status</label>
+                                            <select
+                                                value={currentStatus}
+                                                onChange={(e) => onStatusChange(task.id, e.target.value)}
+                                                className={`border rounded px-2 py-1.5 outline-none focus:ring-1 focus:ring-tempo-red ${currentStatus === 'completed' ? 'text-green-700 bg-green-50 border-green-200' : 'text-gray-700 bg-gray-50 border-gray-200'}`}
+                                                onClick={(e) => e.stopPropagation()}
+                                            >
+                                                <option value="pending">Pending</option>
+                                                <option value="completed">Completed</option>
+                                            </select>
+                                        </div>
+                                    )}
 
                                     {/* Due Date */}
                                     <div className="flex flex-col gap-1">
@@ -536,6 +552,7 @@ end $$;
                                             onChange={(e) => onDateChange && onDateChange(task.id, e.target.value)}
                                             className="border border-gray-200 rounded px-2 py-1.5 text-gray-700 outline-none focus:border-tempo-red bg-gray-50"
                                             onClick={(e) => e.stopPropagation()}
+                                            disabled={isTrash}
                                         />
                                     </div>
 
@@ -571,6 +588,7 @@ end $$;
                                         value={task.obstacles || ''}
                                         onChange={(e) => onObstacleChange(task.id, e.target.value)}
                                         onClick={(e) => e.stopPropagation()}
+                                        disabled={isTrash}
                                     />
                                 </div>
                             </div>
@@ -956,7 +974,7 @@ end $$;
             );
         };
 
-        const TaskManager = ({ tasks, attendees, onUpdateTask, onAdd, onImport, meetingId, currentUserId, teamMembers, currentUser, onDelete, onUpdateText }) => {
+        const TaskManager = ({ tasks, attendees, onUpdateTask, onAdd, onImport, meetingId, currentUserId, teamMembers, currentUser, onDelete, onUpdateText, onRestore }) => {
             const [newTaskText, setNewTaskText] = useState('');
             const [assignee, setAssignee] = useState(currentUserId || '');
             const [startDate, setStartDate] = useState(getTodayISO());
@@ -1026,13 +1044,13 @@ end $$;
                             {activeTasks.map(task => {
                                 const user = (teamMembers || []).find(u => (u.email === task.assignee || u.id === task.assignee)) || (attendees || []).find(u => (u.email === task.assignee || u.id === task.assignee)) || { name: 'Unknown' };
                                 task.assigneeName = user.name || user.email; 
-                                return <TaskCard key={task.id} task={task} meetingTitle="" onStatusChange={handleStatusChange} onObstacleChange={handleObstacleChange} onDateChange={handleDateChange} currentUser={currentUser} onDelete={onDelete} onUpdateText={onUpdateText}/>;
+                                return <TaskCard key={task.id} task={task} meetingTitle="" onStatusChange={handleStatusChange} onObstacleChange={handleObstacleChange} onDateChange={handleDateChange} currentUser={currentUser} onDelete={onDelete} onUpdateText={onUpdateText} onRestore={onRestore} isTrash={task.deleted} />;
                             })}
                         </div>
                         {completedTasks.length > 0 && (
                             <div className="space-y-3 pt-6 border-t border-gray-200">
                                 <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">Completed</h3>
-                                {completedTasks.map(task => <TaskCard key={task.id} task={task} meetingTitle="" onStatusChange={handleStatusChange} onObstacleChange={handleObstacleChange} onDateChange={handleDateChange} currentUser={currentUser} onDelete={onDelete} onUpdateText={onUpdateText}/>)}
+                                {completedTasks.map(task => <TaskCard key={task.id} task={task} meetingTitle="" onStatusChange={handleStatusChange} onObstacleChange={handleObstacleChange} onDateChange={handleDateChange} currentUser={currentUser} onDelete={onDelete} onUpdateText={onUpdateText} onRestore={onRestore} isTrash={task.deleted} />)}
                             </div>
                         )}
                     </div>
@@ -1346,7 +1364,7 @@ end $$;
                     due.setHours(0,0,0,0);
                     return due <= twoDaysFromNow && due >= today && 
                            !t.done && t.status !== 'completed' &&
-                           t.reminder_sent !== true; 
+                           t.reminder_sent !== true && !t.deleted; // Check deleted flag
                 });
 
                 if (tasksDueSoon.length > 0) {
@@ -1414,14 +1432,10 @@ end $$;
                 setIsSyncing(true);
                 
                 try {
-                    // Start sync from 7 DAYS AGO to catch any recent moves/deletions robustly
+                    // Start sync from 5 YEARS AGO to ensure retrievable history as requested
                     let timeMin = new Date();
-                    timeMin.setDate(timeMin.getDate() - 7); 
+                    timeMin.setFullYear(timeMin.getFullYear() - 5); 
                     timeMin.setHours(0,0,0,0);
-                    
-                    if (syncRange === 'past_month') { 
-                        timeMin.setDate(timeMin.getDate() - 30); 
-                    }
                     
                     const timeMinIso = timeMin.toISOString();
                     const dateMinStr = timeMinIso.split('T')[0]; 
@@ -1430,7 +1444,7 @@ end $$;
                     
                     console.log(`Syncing events from ${timeMinIso}...`);
 
-                    const resp = await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events?maxResults=500&orderBy=startTime&singleEvents=true&timeMin=${timeMinIso}&_=${cacheBuster}`, { 
+                    const resp = await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events?maxResults=2500&orderBy=startTime&singleEvents=true&timeMin=${timeMinIso}&_=${cacheBuster}`, { 
                         headers: { 
                             Authorization: `Bearer ${session.provider_token}`,
                             'Cache-Control': 'no-cache, no-store, must-revalidate'
@@ -1480,7 +1494,8 @@ end $$;
                             const taskText = match[1].trim();
                             if (taskText) {
                                 const taskId = `t_${event.id}_${taskText.substring(0, 5).replace(/\s/g, '')}`;
-                                taskBatch.push({ id: taskId, meeting_id: mId, text: taskText, assignee: currentUser.id, status: 'pending' });
+                                // Ensure tasks from GCal are marked as NOT deleted during sync (RESTORE LOGIC)
+                                taskBatch.push({ id: taskId, meeting_id: mId, text: taskText, assignee: currentUser.id, status: 'pending', deleted: false });
                             }
                         }
 
@@ -1529,29 +1544,8 @@ end $$;
                             }
                         }
                         if (taskBatch.length > 0) {
-                            const { error } = await client.from('tasks').upsert(taskBatch, { ignoreDuplicates: true });
+                            const { error } = await client.from('tasks').upsert(taskBatch, { ignoreDuplicates: false }); // Allow updates to flip 'deleted' back to false
                             if (error) console.error("Task sync error (non-fatal):", error);
-                        }
-                    }
-
-                    // --- STALE DATA CLEANUP ---
-                    if (client) {
-                        const { data: dbMeetings } = await client
-                            .from('meetings')
-                            .select('id, google_calendar_id')
-                            .eq('platform', 'Google Calendar')
-                            .gte('date', dateMinStr); 
-                        
-                        if (dbMeetings) {
-                            const staleIds = dbMeetings
-                                .filter(m => m.google_calendar_id && !gCalEventIds.has(m.google_calendar_id))
-                                .map(m => m.id);
-                            
-                            if (staleIds.length > 0) {
-                                console.log("Cleaning up stale meetings:", staleIds);
-                                await client.from('meetings').delete().in('id', staleIds);
-                                await client.from('tasks').delete().in('meeting_id', staleIds);
-                            }
                         }
                     }
 
@@ -1712,7 +1706,7 @@ end $$;
 
                              const taskId = `t_doc_${Date.now()}_${Math.floor(Math.random()*10000)}`;
                              // Added assigner field for doc imports (defaults to current user importing)
-                             const newTaskObj = { id: taskId, meeting_id: meeting.id, text: task.text, assignee: task.assignee, assigner: currentUser.id, status: 'pending', start_date: taskStartDate, end_date: null };
+                             const newTaskObj = { id: taskId, meeting_id: meeting.id, text: task.text, assignee: task.assignee, assigner: currentUser.id, status: 'pending', start_date: taskStartDate, end_date: null, deleted: false };
                              
                              setTasks(prev => [...prev, { ...newTaskObj, meetingId: meeting.id }]); // update local
                              
@@ -1778,7 +1772,7 @@ end $$;
             const handleAddStandaloneTask = (text, assigneeId, start, end) => {
                 if (!text.trim()) return;
                 const newId = `t_${Date.now()}`;
-                const newTask = { id: newId, meeting_id: 'standalone', text: text, assignee: assigneeId || currentUser.id, assigner: currentUser.id, status: 'pending', start_date: start || getTodayISO(), end_date: end || getTodayISO() };
+                const newTask = { id: newId, meeting_id: 'standalone', text: text, assignee: assigneeId || currentUser.id, assigner: currentUser.id, status: 'pending', start_date: start || getTodayISO(), end_date: end || getTodayISO(), deleted: false };
                 
                 setTasks(prev => [newTask, ...prev]);
                 if (dbStatus === 'connected' && client) { 
@@ -1791,15 +1785,24 @@ end $$;
             };
 
             const handleDeleteTask = async (taskId) => {
-                if (!confirm("Are you sure you want to delete this task?")) return;
-                setTasks(prev => prev.filter(t => t.id !== taskId));
+                // Soft delete
+                if (!confirm("Are you sure you want to move this task to trash?")) return;
+                setTasks(prev => prev.map(t => t.id === taskId ? { ...t, deleted: true } : t));
                 if (dbStatus === 'connected' && client) {
-                    await client.from('tasks').delete().eq('id', taskId);
+                    await client.from('tasks').update({ deleted: true }).eq('id', taskId);
+                }
+            };
+
+            const handleRestoreTask = async (taskId) => {
+                if (!confirm("Restore this task from trash?")) return;
+                setTasks(prev => prev.map(t => t.id === taskId ? { ...t, deleted: false } : t));
+                if (dbStatus === 'connected' && client) {
+                    await client.from('tasks').update({ deleted: false }).eq('id', taskId);
                 }
             };
 
             const handleDeleteAllTasks = async () => {
-                if (!confirm("⚠️ DANGER ZONE ⚠️\n\nAre you sure you want to delete ALL tasks in the system? This cannot be undone.")) return;
+                if (!confirm("⚠️ DANGER ZONE ⚠️\n\nAre you sure you want to PERMANENTLY delete ALL tasks in the system? This cannot be undone.")) return;
                 
                 // Clear local state
                 setTasks([]);
@@ -1916,6 +1919,12 @@ end $$;
                 let scopeFiltered = [];
                 const effectiveScope = isManager ? taskScope : (taskScope === 'assigned_by_me' ? 'assigned_by_me' : 'me');
                 
+                // If viewing Trash, show ALL deleted tasks for user
+                if (taskFilter === 'trash') {
+                    // Show deleted tasks where user is assignee OR assigner
+                    return tasks.filter(t => t.deleted && (t.assignee === currentUser?.id || t.assigner === currentUser?.id));
+                }
+
                 if (effectiveScope === 'me') {
                     const myEmail = (currentUser?.email || '').toLowerCase().trim();
                     const myId = currentUser?.id;
@@ -1942,7 +1951,6 @@ end $$;
                     
                     const teamMemberIdentifiers = teamMembers
                         .filter(tm => myManagedTeams.includes(tm.team))
-                        // EXCLUDE current user's email so "My Team" only shows OTHERS' tasks
                         .filter(tm => tm.email && tm.email.toLowerCase() !== (currentUser?.email || '').toLowerCase())
                         .flatMap(tm => {
                              const colleague = colleagues.find(c => c.email === tm.email);
@@ -1952,13 +1960,14 @@ end $$;
                     scopeFiltered = tasks.filter(t => {
                         const a = t.assignee; 
                         if (!a) return false;
-                        // Extra safety check: Exclude own ID or Email
                         if (a === currentUser?.id || a === currentUser?.email) return false;
-                        
                         return teamMemberIdentifiers.includes(a) || teamMemberIdentifiers.includes(a.toLowerCase());
                     });
                 }
                 
+                // Filter out deleted tasks for normal views
+                scopeFiltered = scopeFiltered.filter(t => !t.deleted);
+
                 if (taskFilter === 'all') return scopeFiltered;
                 if (taskFilter === 'completed') return scopeFiltered.filter(t => (t.status === 'completed' || t.done));
                 if (taskFilter === 'pending') return scopeFiltered.filter(t => (t.status !== 'completed' && !t.done));
@@ -1973,7 +1982,7 @@ end $$;
                 return Array.from(unique.values());
             }, [teamMembers, colleagues, currentUser]);
 
-            if (loading) return <div className="h-full flex items-center justify-center h-screen bg-gray-50"><div className="text-center text-gray-500 animate-pulse"><p>Loading SyncMeet...</p></div></div>;
+            if (loading) return <div className="h-full flex items-center justify-center h-screen bg-gray-50"><div className="text-center text-gray-500 animate-pulse"><p>Loading Tempo Tasks...</p></div></div>;
 
             if (!session) {
                 if (view === 'reset_password') return <PasswordResetScreen onReset={handleUpdatePassword} />;
@@ -2019,9 +2028,9 @@ end $$;
                                     {dashboardViewMode === 'tasks' && (
                                         <div className="flex gap-2 w-full sm:w-auto items-center">
                                             <div className="flex items-center bg-white border border-gray-200 rounded-lg p-0.5">
-                                                <button onClick={() => setTaskScope('me')} className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${taskScope === 'me' ? 'bg-gray-100 text-gray-900' : 'text-gray-500'}`}>Me</button>
-                                                <button onClick={() => setTaskScope('assigned_by_me')} className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${taskScope === 'assigned_by_me' ? 'bg-gray-100 text-gray-900' : 'text-gray-500'}`}>Assigned by Me</button>
-                                                {isManager && <button onClick={() => setTaskScope('team')} className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${taskScope === 'team' ? 'bg-gray-100 text-gray-900' : 'text-gray-500'}`}>My Team</button>}
+                                                <button onClick={() => setTaskScope('me')} className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${taskScope === 'me' && taskFilter !== 'trash' ? 'bg-gray-100 text-gray-900' : 'text-gray-500'}`} disabled={taskFilter === 'trash'}>Me</button>
+                                                <button onClick={() => setTaskScope('assigned_by_me')} className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${taskScope === 'assigned_by_me' && taskFilter !== 'trash' ? 'bg-gray-100 text-gray-900' : 'text-gray-500'}`} disabled={taskFilter === 'trash'}>Assigned by Me</button>
+                                                {isManager && <button onClick={() => setTaskScope('team')} className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${taskScope === 'team' && taskFilter !== 'trash' ? 'bg-gray-100 text-gray-900' : 'text-gray-500'}`} disabled={taskFilter === 'trash'}>My Team</button>}
                                             </div>
                                             
                                             {/* ADMIN DELETE BUTTON */}
@@ -2049,6 +2058,13 @@ end $$;
                                                 >
                                                     <Icon name="CheckCircle2" className="w-3 h-3" />
                                                     Completed
+                                                </button>
+                                                <button 
+                                                    onClick={() => setTaskFilter('trash')} 
+                                                    className={`px-3 py-1.5 text-xs font-medium rounded-md flex items-center gap-1.5 transition-colors ${taskFilter === 'trash' ? 'bg-red-50 text-red-700 shadow-sm border border-red-100' : 'text-gray-500 hover:bg-gray-50 border border-transparent'}`}
+                                                >
+                                                    <Icon name="Trash2" className="w-3 h-3" />
+                                                    Trash
                                                 </button>
                                             </div>
 
@@ -2099,7 +2115,7 @@ end $$;
                                             </form>
                                         </div>
                                     )}
-                                    {filteredTasks.length > 0 ? (filteredTasks.map(t => { const mtg = meetings.find(m => m.id === t.meetingId); const user = allPossibleAssignees.find(c => c.email === t.assignee || c.id === t.assignee) || { name: 'Unknown' }; t.assigneeName = user.name || user.email; return (<TaskCard key={t.id} task={t} meetingTitle={mtg ? mtg.title : (t.meeting_id === 'standalone' ? 'Personal Task' : 'Unknown Meeting')} onStatusChange={(id, val) => handleUpdateTask(id, { status: val, done: val === 'completed' })} onObstacleChange={(id, val) => handleUpdateTask(id, { obstacles: val })} onDateChange={(id, val) => handleUpdateTask(id, { end_date: val })} currentUser={currentUser} onDelete={handleDeleteTask} onUpdateText={handleUpdateText} />); })) : (<div className="text-center py-12 bg-white rounded-xl border border-dashed text-gray-500">No tasks found matching filter.</div>)}
+                                    {filteredTasks.length > 0 ? (filteredTasks.map(t => { const mtg = meetings.find(m => m.id === t.meetingId); const user = allPossibleAssignees.find(c => c.email === t.assignee || c.id === t.assignee) || { name: 'Unknown' }; t.assigneeName = user.name || user.email; return (<TaskCard key={t.id} task={t} meetingTitle={mtg ? mtg.title : (t.meeting_id === 'standalone' ? 'Personal Task' : 'Unknown Meeting')} onStatusChange={(id, val) => handleUpdateTask(id, { status: val, done: val === 'completed' })} onObstacleChange={(id, val) => handleUpdateTask(id, { obstacles: val })} onDateChange={(id, val) => handleUpdateTask(id, { end_date: val })} currentUser={currentUser} onDelete={handleDeleteTask} onUpdateText={handleUpdateText} onRestore={handleRestoreTask} isTrash={t.deleted} />); })) : (<div className="text-center py-12 bg-white rounded-xl border border-dashed text-gray-500">No tasks found matching filter.</div>)}
                                 </div>
                             ) : dashboardViewMode === 'team' ? (
                                 <TeamList teamMembers={teamMembers} colleagues={colleagues} onAddMember={handleAddTeamMember} onUpdateMember={handleUpdateTeamMember} onRemoveMember={handleRemoveTeamMember}/>
@@ -2116,11 +2132,11 @@ end $$;
                 <div className="flex flex-col h-screen bg-white">
                     <AppHeader currentUser={currentUser} onLogout={handleLogout} dbStatus={dbStatus} onBack={() => setView('dashboard')} title={m.title} meeting={m} />
                     <div className="flex-1 overflow-hidden flex flex-col">
-                        <TaskManager tasks={tasks.filter(t => t.meetingId === m.id)} attendees={allPossibleAssignees} currentUserId={currentUser ? currentUser.id : null} onUpdateTask={handleUpdateTask} currentUser={currentUser} onDelete={handleDeleteTask} onUpdateText={handleUpdateText}
+                        <TaskManager tasks={tasks.filter(t => t.meetingId === m.id)} attendees={allPossibleAssignees} currentUserId={currentUser ? currentUser.id : null} onUpdateTask={handleUpdateTask} currentUser={currentUser} onDelete={handleDeleteTask} onUpdateText={handleUpdateText} onRestore={handleRestoreTask}
                         // Modified onAdd for "New Task" Notification
                         onAdd={(mId, text, assignee, start, end) => { 
                             const newId = `t_${Date.now()}`; 
-                            const newTaskObj = { id: newId, meeting_id: mId, text, assignee, assigner: currentUser.id, status: 'pending', start_date: start, end_date: end };
+                            const newTaskObj = { id: newId, meeting_id: mId, text, assignee, assigner: currentUser.id, status: 'pending', start_date: start, end_date: end, deleted: false };
                             setTasks(prev => [...prev, { ...newTaskObj, meetingId: mId }]); 
                             
                             if (dbStatus === 'connected' && client) { 
