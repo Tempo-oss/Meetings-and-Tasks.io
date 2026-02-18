@@ -1781,7 +1781,10 @@ end $$;
                 setTasks(prev => [newTask, ...prev]);
                 if (dbStatus === 'connected' && client) { 
                     client.from('tasks').insert(newTask).then(({error}) => { 
-                        if(error) console.error("Error", error); 
+                        if(error) {
+                            console.error("Task Insert Error (Personal):", error);
+                            alert("Failed to save task. Database schema might be outdated. Please run the SQL Setup script again.");
+                        }
                         else scheduleAssignmentNotification(newTask, 'Personal Task', 'standalone'); // BUFFERED
                     }); 
                 }
@@ -2139,14 +2142,19 @@ end $$;
                         <TaskManager tasks={tasks.filter(t => t.meetingId === m.id)} attendees={allPossibleAssignees} currentUserId={currentUser ? currentUser.id : null} onUpdateTask={handleUpdateTask} currentUser={currentUser} onDelete={handleDeleteTask} onUpdateText={handleUpdateText} onRestore={handleRestoreTask}
                         // Modified onAdd for "New Task" Notification
                         onAdd={(mId, text, assignee, start, end) => { 
-                            const newId = `t_${Date.now()}`; 
-                            const newTaskObj = { id: newId, meeting_id: mId, text, assignee, assigner: currentUser.id, status: 'pending', start_date: start, end_date: end, deleted: false };
+                            const newId = `t_${Date.now()}_${Math.floor(Math.random() * 1000)}`; 
+                            const newTaskObj = { id: newId, meeting_id: mId, text, assignee, assigner: currentUser.id, status: 'pending', start_date: start, end_date: end, deleted: false, done: false };
                             setTasks(prev => [...prev, { ...newTaskObj, meetingId: mId }]); 
                             
                             if (dbStatus === 'connected' && client) { 
-                                client.from('tasks').insert(newTaskObj).then(() => {
-                                    // NOTIFICATION: Trigger for meeting tasks
-                                    scheduleAssignmentNotification(newTaskObj, m.title, m.id);
+                                client.from('tasks').insert(newTaskObj).then(({ error }) => {
+                                    if (error) {
+                                        console.error("Task Insert Error:", error);
+                                        alert("Failed to save task. Database schema might be outdated. Please run the SQL Setup script again.");
+                                    } else {
+                                        // NOTIFICATION: Trigger for meeting tasks
+                                        scheduleAssignmentNotification(newTaskObj, m.title, m.id);
+                                    }
                                 }); 
                             } 
                         }} 
