@@ -1389,8 +1389,9 @@ end $$;
                     const { error: checkError } = await sbClient.from('meetings').select('id').limit(1);
                     if (checkError && (checkError.code === 'PGRST205' || checkError.code === '42P01')) throw { code: 'TABLE_MISSING' };
 
-                    const { data: m, error: mErr } = await sbClient.from('meetings').select('*');
-                    const { data: t, error: tErr } = await sbClient.from('tasks').select('*');
+                    // Fetch large range to prevent truncation of new items
+                    const { data: m, error: mErr } = await sbClient.from('meetings').select('*').range(0, 9999);
+                    const { data: t, error: tErr } = await sbClient.from('tasks').select('*').range(0, 9999);
                     const { data: tm, error: tmErr } = await sbClient.from('team_members').select('*');
 
                     if (mErr || tErr) throw new Error("Fetch failed");
@@ -1548,6 +1549,9 @@ end $$;
                             if (error) console.error("Task sync error (non-fatal):", error);
                         }
                     }
+
+                    // --- STALE DATA CLEANUP REMOVED COMPLETELY ---
+                    // This ensures no task/meeting is ever deleted automatically during sync.
 
                     setMeetings([]); 
                     await fetchData(client);
