@@ -1729,16 +1729,16 @@ end $$;
                             for (const el of richTextElements) {
                                 if (el.person?.personProperties?.email) {
                                     const email = el.person.personProperties.email;
-                                    const user = [...teamMembers, ...((meeting.participants || []).map(p => typeof p === 'string' ? {name:p, id:p} : p))].find(u => 
+                                    const user = allPossibleAssignees.find(u => 
                                         (u.email && u.email.toLowerCase() === email.toLowerCase())
                                     );
-                                    if (user) return user.email; // Unified: Returns email consistently!
+                                    if (user) return user.email; 
                                     return email;
                                 }
                             }
                         }
                         const lowerText = text.toLowerCase().replace(/\u00A0/g, ' ');
-                        const allUsers = [...teamMembers, ...((meeting.participants || []).map(p => typeof p === 'string' ? {name:p, id:p} : p))];
+                        const allUsers = [...allPossibleAssignees];
                         allUsers.sort((a, b) => (b.name?.length || 0) - (a.name?.length || 0)); 
                         for (const u of allUsers) {
                             if (u.name) {
@@ -1754,53 +1754,89 @@ end $$;
                     // --- EXECUTION ---
                     const flatNodes = flattenDoc(docData.body?.content);
                     
-                    let startIndex = 0;
-                    let foundDateStr = null;
-                    let maxTimestamp = 0;
+                    const dateRegex = /\b(?:\d{4}-\d{2}-\d{2}|\d{1,2}\/\d{1,2}\/\d{4}|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s\d{1,2}(?:st|nd|rd|th)?(?:,?\s\d{4})?)\b/i;
                     
+                    const meetingHeaders = [];
                     flatNodes.forEach((node, idx) => {
-                        const txt = node.elements.map(e => e.textRun?.content || '').join('').trim();
-                        const dateMatch = txt.match(/\b(?:\d{4}-\d{2}-\d{2}|\d{1,2}\/\d{1,2}\/\d{4}|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s\d{1,2}(?:st|nd|rd|th)?(?:,?\s\d{4})?)\b/i);
-                        if (dateMatch) {
+                        const txt = node.elements?.map(e => e.textRun?.content || '').join('').trim();
+                        if (!txt) return;
+                        
+                        // Exclude lines that are clearly bullets (tasks) from being considered headers
+                        if (node.bullet) return;
+                        
+                        const dateMatch = txt.match(dateRegex);
+                        if (dateMatch && txt.length < 150 && !/^(\[ ?\]|\( ?\)|\u2610|\u2611)/.test(txt)) {
                             const ts = Date.parse(dateMatch[0]);
-                            if (!isNaN(ts)) {
-                                if (ts > new Date('2023-01-01').getTime() && ts > maxTimestamp) {
-                                    maxTimestamp = ts;
-                                    startIndex = idx + 1; 
-                                    foundDateStr = new Date(ts).toISOString().split('T')[0];
-                                }
+                            if (!isNaN(ts) && ts > new Date('2023-01-01').getTime()) {
+                                meetingHeaders.push({
+                                    index: idx,
+                                    dateStr: new Date(ts).toISOString().split('T')[0],
+                                    rawText: txt
+                                });
                             }
                         }
                     });
 
-                    const scanNodesForTasks = (startIdx) => {
-                        const results = [];
-                        for (let i = startIdx; i < flatNodes.length; i++) {
-                            const paraNode = flatNodes[i];
-                            if (paraNode.elements?.some(e => e.horizontalRule)) break;
+                    let targetHeader = meetingHeaders.find(h => h.dateStr === meeting.date);
+                    if (!targetHeader && meetingHeaders.length > 0) {
+                        targetHeader = meetingHeaders[0]; // fallback to first header (usually top/latest)
+                    }
 
+                    let startIndex = targetHeader ? targetHeader.index + 1 : 0;
+                    let stopIndex = flatNodes.length;
+
+                    if (targetHeader) {
+                        const nextHeader = meetingHeaders.find(h => h.index > targetHeader.index);
+                        if (nextHeader) {
+                            stopIndex = nextHeader.index;
+                        }
+                    }
+
+                    const scanNodesForTasks = (startIdx, endIdx) => {
+                        const results = [];
+                        let inActionItems = false;
+                        
+                        for (let i = startIdx; i < endIdx; i++) {
+                            const paraNode = flatNodes[i];
+                            
                             let paraText = '';
                             let richElements = [];
-                            paraNode.elements.forEach(pElem => {
+                            paraNode.elements?.forEach(pElem => {
                                 if (pElem.textRun) paraText += pElem.textRun.content;
                                 if (pElem.person) richElements.push(pElem);
                             });
                             
                             let rawText = paraText.replace(/\u00A0/g, ' ').trim();
+                            if (!rawText) continue;
                             if (/^(attendees|participants|guests|cc|to):/i.test(rawText)) continue;
+
+                            if (/^(action items|next steps|to do|tasks):/i.test(rawText)) {
+                                inActionItems = true;
+                                continue;
+                            }
 
                             const isBullet = !!paraNode.bullet;
                             const manualCheckboxRegex = /^(\[ ?\]|\( ?\)|\u2610|\u2611)\s*/;
                             const isManualCheckbox = manualCheckboxRegex.test(rawText);
                             const hasPersonChip = richElements.length > 0;
+                            
+                            let startsWithUser = false;
+                            const lowerRaw = rawText.toLowerCase();
+                            const allUsers = allPossibleAssignees; // Using the robust merged attendees prop
+                            for (const u of allUsers) {
+                                if (u.name && lowerRaw.startsWith(u.name.toLowerCase())) {
+                                    startsWithUser = true;
+                                    break;
+                                }
+                            }
 
-                            if (isBullet || isManualCheckbox || hasPersonChip) {
+                            if (isBullet || isManualCheckbox || hasPersonChip || startsWithUser || inActionItems) {
                                 let cleanText = rawText.replace(manualCheckboxRegex, '').replace(/^\u25CF\s*/, '').trim();
 
-                                if (cleanText.length > 1) {
+                                if (cleanText.length > 2) {
                                     const assignedTo = findUserInText(cleanText, richElements);
                                     if (assignedTo) {
-                                        const assignedUser = [...teamMembers, ...((meeting.participants || []).map(p => typeof p === 'string' ? {name:p, id:p} : p))].find(u => (u.id === assignedTo || u.email === assignedTo));
+                                        const assignedUser = allUsers.find(u => (u.id === assignedTo || u.email === assignedTo));
                                         if (assignedUser && assignedUser.name) {
                                             const escapedName = assignedUser.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
                                             const nameRegex = new RegExp(`^@?${escapedName}\\s*`, 'i');
@@ -1817,12 +1853,12 @@ end $$;
                         return results;
                     };
 
-                    let tasksFound = scanNodesForTasks(startIndex);
+                    let tasksFound = scanNodesForTasks(startIndex, stopIndex);
                     let usedDateFallback = false;
 
-                    if (foundDateStr && tasksFound.length === 0) {
-                        console.log("No tasks found under date " + foundDateStr + ". Retrying full doc scan.");
-                        tasksFound = scanNodesForTasks(0);
+                    if (targetHeader && tasksFound.length === 0) {
+                        console.log(`No tasks found in section for ${targetHeader.dateStr}. Retrying full doc scan.`);
+                        tasksFound = scanNodesForTasks(0, flatNodes.length);
                         usedDateFallback = true;
                     }
 
@@ -1831,7 +1867,7 @@ end $$;
                     } 
                     else {
                         let createdCount = 0;
-                        const taskStartDate = (!usedDateFallback && foundDateStr) ? foundDateStr : (meeting.date || getTodayISO()); 
+                        const taskStartDate = (!usedDateFallback && targetHeader) ? targetHeader.dateStr : (meeting.date || getTodayISO()); 
                         const existingTexts = new Set(tasks.filter(t => t.meetingId === meeting.id).map(t => t.text.trim().toLowerCase()));
 
                         for (const task of tasksFound) {
@@ -1857,7 +1893,7 @@ end $$;
                         if (createdCount === 0) {
                             alert("No new tasks imported (duplicates skipped).");
                         } else {
-                            const msgSource = (!usedDateFallback && foundDateStr) ? `section: ${foundDateStr}` : "entire doc";
+                            const msgSource = (!usedDateFallback && targetHeader) ? `section: ${targetHeader.dateStr}` : "entire doc";
                             alert(`Imported ${createdCount} tasks from ${msgSource}!`);
                         }
                     }
