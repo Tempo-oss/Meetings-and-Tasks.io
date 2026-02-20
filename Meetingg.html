@@ -1008,7 +1008,7 @@ end $$;
             );
         };
 
-        const TaskManager = ({ tasks, attendees, onUpdateTask, onAdd, onImport, meetingId, currentUserEmail, teamMembers, currentUser, onDelete, onUpdateText, onRestore }) => {
+        const TaskManager = ({ tasks, attendees, onUpdateTask, onAdd, onImport, meetingId, currentUserEmail, teamMembers, currentUser, onDelete, onUpdateText, onRestore, meetings = [] }) => {
             const [newTaskText, setNewTaskText] = useState('');
             const [assignee, setAssignee] = useState(currentUserEmail || '');
             const [startDate, setStartDate] = useState(getTodayISO());
@@ -1069,7 +1069,9 @@ end $$;
                             {activeTasks.map(task => {
                                 const user = attendees.find(u => u.email === task.assignee || u.id === task.assignee) || { name: 'Unknown' };
                                 task.assigneeName = user.name || user.email; 
-                                return <TaskCard key={task.id} task={task} meetingTitle="" onStatusChange={handleStatusChange} onObstacleChange={handleObstacleChange} onDateChange={handleDateChange} currentUser={currentUser} onDelete={onDelete} onUpdateText={onUpdateText} onRestore={onRestore} isTrash={task.deleted} />;
+                                const mtg = meetings.find(m => m.id === (task.meetingId || task.meeting_id));
+                                const originLabel = mtg ? `Date: ${mtg.date}` : '';
+                                return <TaskCard key={task.id} task={task} meetingTitle={originLabel} onStatusChange={handleStatusChange} onObstacleChange={handleObstacleChange} onDateChange={handleDateChange} currentUser={currentUser} onDelete={onDelete} onUpdateText={onUpdateText} onRestore={onRestore} isTrash={task.deleted} />;
                             })}
                         </div>
                         {completedTasks.length > 0 && (
@@ -1078,7 +1080,9 @@ end $$;
                                 {completedTasks.map(task => {
                                     const user = attendees.find(u => u.email === task.assignee || u.id === task.assignee) || { name: 'Unknown' };
                                     task.assigneeName = user.name || user.email;
-                                    return <TaskCard key={task.id} task={task} meetingTitle="" onStatusChange={handleStatusChange} onObstacleChange={handleObstacleChange} onDateChange={handleDateChange} currentUser={currentUser} onDelete={onDelete} onUpdateText={onUpdateText} onRestore={onRestore} isTrash={task.deleted} />;
+                                    const mtg = meetings.find(m => m.id === (task.meetingId || task.meeting_id));
+                                    const originLabel = mtg ? `Date: ${mtg.date}` : '';
+                                    return <TaskCard key={task.id} task={task} meetingTitle={originLabel} onStatusChange={handleStatusChange} onObstacleChange={handleObstacleChange} onDateChange={handleDateChange} currentUser={currentUser} onDelete={onDelete} onUpdateText={onUpdateText} onRestore={onRestore} isTrash={task.deleted} />;
                                 })}
                             </div>
                         )}
@@ -1088,7 +1092,9 @@ end $$;
                                 {trashTasks.map(task => {
                                     const user = attendees.find(u => u.email === task.assignee || u.id === task.assignee) || { name: 'Unknown' };
                                     task.assigneeName = user.name || user.email;
-                                    return <TaskCard key={task.id} task={task} meetingTitle="" onStatusChange={handleStatusChange} onObstacleChange={handleObstacleChange} onDateChange={handleDateChange} currentUser={currentUser} onDelete={onDelete} onUpdateText={onUpdateText} onRestore={onRestore} isTrash={true} />;
+                                    const mtg = meetings.find(m => m.id === (task.meetingId || task.meeting_id));
+                                    const originLabel = mtg ? `Date: ${mtg.date}` : '';
+                                    return <TaskCard key={task.id} task={task} meetingTitle={originLabel} onStatusChange={handleStatusChange} onObstacleChange={handleObstacleChange} onDateChange={handleDateChange} currentUser={currentUser} onDelete={onDelete} onUpdateText={onUpdateText} onRestore={onRestore} isTrash={true} />;
                                 })}
                             </div>
                         )}
@@ -2172,6 +2178,15 @@ end $$;
                 return scopeFiltered;
             }, [tasks, taskFilter, taskScope, currentUser, teamMembers, session, isManager]);
 
+            // Meeting Aggregation logic for the individual meeting view
+            const currentMeetingForView = meetings.find(x => x.id === selectedMeetingId);
+            const aggregatedMeetingTasks = currentMeetingForView 
+                ? tasks.filter(t => {
+                    const tMtg = meetings.find(m => m.id === (t.meetingId || t.meeting_id));
+                    return tMtg && tMtg.title === currentMeetingForView.title;
+                }) 
+                : [];
+
             if (loading) return <div className="h-full flex items-center justify-center h-screen bg-gray-50 dark:bg-gray-900 transition-colors"><div className="text-center text-gray-500 dark:text-gray-400 animate-pulse"><p>Loading Tempo Tasks...</p></div></div>;
 
             if (!session) {
@@ -2306,7 +2321,7 @@ end $$;
                                                 </form>
                                             </div>
                                         )}
-                                        {filteredTasks.length > 0 ? (filteredTasks.map(t => { const mtg = meetings.find(m => m.id === t.meetingId); const user = allPossibleAssignees.find(c => c.email === t.assignee || c.id === t.assignee) || { name: 'Unknown' }; t.assigneeName = user.name || user.email; return (<TaskCard key={t.id} task={t} meetingTitle={mtg ? mtg.title : (t.meeting_id === 'standalone' ? 'Personal Task' : 'Unknown Meeting')} onStatusChange={(id, val) => handleUpdateTask(id, { status: val, done: val === 'completed' })} onObstacleChange={(id, val) => handleUpdateTask(id, { obstacles: val })} onDateChange={(id, val) => handleUpdateTask(id, { end_date: val })} currentUser={currentUser} onDelete={handleDeleteTask} onUpdateText={handleUpdateText} onRestore={handleRestoreTask} isTrash={t.deleted} />); })) : (<div className="text-center py-12 bg-white dark:bg-gray-800 rounded-xl border border-dashed border-gray-300 dark:border-gray-700 text-gray-500 dark:text-gray-400">No tasks found matching filter.</div>)}
+                                        {filteredTasks.length > 0 ? (filteredTasks.map(t => { const mtg = meetings.find(m => m.id === (t.meetingId || t.meeting_id)); const user = allPossibleAssignees.find(c => c.email === t.assignee || c.id === t.assignee) || { name: 'Unknown' }; t.assigneeName = user.name || user.email; return (<TaskCard key={t.id} task={t} meetingTitle={mtg ? mtg.title : (t.meeting_id === 'standalone' ? 'Personal Task' : 'Unknown Meeting')} onStatusChange={(id, val) => handleUpdateTask(id, { status: val, done: val === 'completed' })} onObstacleChange={(id, val) => handleUpdateTask(id, { obstacles: val })} onDateChange={(id, val) => handleUpdateTask(id, { end_date: val })} currentUser={currentUser} onDelete={handleDeleteTask} onUpdateText={handleUpdateText} onRestore={handleRestoreTask} isTrash={t.deleted} />); })) : (<div className="text-center py-12 bg-white dark:bg-gray-800 rounded-xl border border-dashed border-gray-300 dark:border-gray-700 text-gray-500 dark:text-gray-400">No tasks found matching filter.</div>)}
                                     </div>
                                 ) : dashboardViewMode === 'team' ? (
                                     <TeamList teamMembers={teamMembers} colleagues={colleagues} onAddMember={handleAddTeamMember} onUpdateMember={handleUpdateTeamMember} onRemoveMember={handleRemoveTeamMember}/>
@@ -2314,11 +2329,11 @@ end $$;
                             </div></main>
                         </>
                     ) : (
-                        view === 'meeting' && meetings.find(x => x.id === selectedMeetingId) && (
+                        view === 'meeting' && currentMeetingForView && (
                             <>
-                                <AppHeader currentUser={currentUser} onLogout={handleLogout} dbStatus={dbStatus} onBack={() => setView('dashboard')} title={meetings.find(x => x.id === selectedMeetingId).title} meeting={meetings.find(x => x.id === selectedMeetingId)} isDarkMode={isDarkMode} toggleDarkMode={toggleDarkMode} />
+                                <AppHeader currentUser={currentUser} onLogout={handleLogout} dbStatus={dbStatus} onBack={() => setView('dashboard')} title={currentMeetingForView.title} meeting={currentMeetingForView} isDarkMode={isDarkMode} toggleDarkMode={toggleDarkMode} />
                                 <div className="flex-1 overflow-hidden flex flex-col">
-                                    <TaskManager tasks={tasks.filter(t => t.meetingId === selectedMeetingId)} attendees={allPossibleAssignees} currentUserEmail={currentUser?.email} onUpdateTask={handleUpdateTask} currentUser={currentUser} onDelete={handleDeleteTask} onUpdateText={handleUpdateText} onRestore={handleRestoreTask}
+                                    <TaskManager tasks={aggregatedMeetingTasks} meetings={meetings} attendees={allPossibleAssignees} currentUserEmail={currentUser?.email} onUpdateTask={handleUpdateTask} currentUser={currentUser} onDelete={handleDeleteTask} onUpdateText={handleUpdateText} onRestore={handleRestoreTask}
                                     onAdd={(mId, text, assignee, start, end) => { 
                                         const newId = `t_${Date.now()}_${Math.floor(Math.random() * 1000)}`; 
                                         const newTaskObj = { id: newId, meeting_id: mId, text, assignee, assigner: currentUser.email, status: 'pending', start_date: start, end_date: end, deleted: false, done: false };
@@ -2336,7 +2351,7 @@ end $$;
                                             }); 
                                         } 
                                     }} 
-                                    meetingId={selectedMeetingId} teamMembers={teamMembers} onImport={() => handleImportFromDoc(meetings.find(x => x.id === selectedMeetingId))} />
+                                    meetingId={selectedMeetingId} teamMembers={teamMembers} onImport={() => handleImportFromDoc(currentMeetingForView)} />
                                 </div>
                             </>
                         )
