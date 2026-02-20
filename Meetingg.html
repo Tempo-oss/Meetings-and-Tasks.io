@@ -1790,15 +1790,10 @@ end $$;
                         }
                     });
 
-                    // IDENTIFY THE CHRONOLOGICALLY LATEST DATE HEADER
-                    let targetHeader = null;
-                    if (meetingHeaders.length > 0) {
-                        targetHeader = meetingHeaders.reduce((latest, current) => {
-                            return new Date(current.dateStr) > new Date(latest.dateStr) ? current : latest;
-                        }, meetingHeaders[0]);
-                    }
+                    // IDENTIFY THE FIRST DATE HEADER IN THE DOCUMENT
+                    let targetHeader = meetingHeaders.length > 0 ? meetingHeaders[0] : null;
 
-                    // EXTRACT ONLY FROM THIS LATEST DATE HEADER FORWARD
+                    // EXTRACT ONLY FROM THIS FIRST DATE HEADER FORWARD
                     let startIndex = targetHeader ? targetHeader.index + 1 : 0;
 
                     const scanNodesForTasks = (startIdx) => {
@@ -1807,6 +1802,13 @@ end $$;
                         
                         for (let i = startIdx; i < flatNodes.length; i++) {
                             const paraNode = flatNodes[i];
+                            
+                            // 1. Stop processing immediately when a horizontal divider appears
+                            const hasHorizontalRule = paraNode.elements?.some(e => e.horizontalRule);
+                            if (hasHorizontalRule) {
+                                console.log("Found horizontal divider, stopping extraction.");
+                                break;
+                            }
                             
                             let paraText = '';
                             let richElements = [];
@@ -1818,11 +1820,11 @@ end $$;
                             let rawText = paraText.replace(/\u00A0/g, ' ').trim();
                             if (!rawText) continue;
 
-                            // STOP IMMEDIATELY IF A DIFFERENT (OLDER) DATE HEADER IS ENCOUNTERED
+                            // 2. Stop processing immediately when another date header appears
                             if (targetHeader) {
                                 const thisHeader = meetingHeaders.find(h => h.index === i);
-                                if (thisHeader && new Date(thisHeader.dateStr) < new Date(targetHeader.dateStr)) {
-                                    console.log("Found older date header, stopping extraction.", thisHeader.dateStr);
+                                if (thisHeader && thisHeader.index !== targetHeader.index) {
+                                    console.log("Found another date header, stopping extraction.", thisHeader.dateStr);
                                     break;
                                 }
                             }
@@ -1833,42 +1835,32 @@ end $$;
                             if (/^(action items|next steps|to do|tasks)(:| -)?/i.test(rawText)) {
                                 inActionItems = true;
                                 continue;
+                            } else if (/^[a-zA-Z0-9\s]+(:| -)$/i.test(rawText) && rawText.length < 25) {
+                                // Exiting action items section if we hit a new generic heading
+                                inActionItems = false;
                             }
 
-                            const isBullet = !!paraNode.bullet;
-                            const manualCheckboxRegex = /^(\[ ?[xX]? ?\]|\( ?[xX]? ?\)|\u2610|\u2611|\u2714)\s*/i;
-                            const isManualCheckbox = manualCheckboxRegex.test(rawText);
-                            const hasPersonChip = richElements.length > 0;
-                            
-                            let startsWithUser = false;
-                            const lowerRaw = rawText.toLowerCase();
-                            const allUsers = allPossibleAssignees; 
-                            for (const u of allUsers) {
-                                if (u.name && lowerRaw.startsWith(u.name.toLowerCase())) {
-                                    startsWithUser = true;
-                                    break;
-                                }
-                            }
-
-                            // Strictly extract ONLY if it's a structural task (bullet/checkbox) OR we are inside the Action Items section
-                            if (isBullet || isManualCheckbox || hasPersonChip || startsWithUser || inActionItems) {
-                                let cleanText = rawText.replace(manualCheckboxRegex, '').replace(/^\u25CF\s*/, '').trim();
+                            // 3. Only extract items listed under "Action items"
+                            if (inActionItems) {
+                                const manualCheckboxRegex = /^(\[ ?[xX]? ?\]|\( ?[xX]? ?\)|\u2610|\u2611|\u2714|-|\u25CF)\s*/i;
+                                let cleanText = rawText.replace(manualCheckboxRegex, '').trim();
 
                                 if (cleanText.length > 2) {
                                     const assignedTo = findUserInText(cleanText, richElements);
+                                    // 4. Only extract lines that contain an assigned owner
+                                    // Tasks without an assigned owner or generic commentary are naturally skipped since assignedTo is null.
                                     if (assignedTo) {
-                                        const assignedUser = allUsers.find(u => (u.id === assignedTo || u.email === assignedTo));
+                                        const assignedUser = allPossibleAssignees.find(u => (u.id === assignedTo || u.email === assignedTo));
                                         if (assignedUser && assignedUser.name) {
                                             const escapedName = assignedUser.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
                                             const nameRegex = new RegExp(`^@?${escapedName}\\s*`, 'i');
                                             cleanText = cleanText.replace(nameRegex, '').trim();
                                         }
-                                    }
-                                    
-                                    cleanText = cleanText.replace(/^[:\-–—]\s*/, '').trim();
-                                    if (cleanText) {
-                                        // Only add if it hasn't been added (basic deduplication within same block)
-                                        results.push({ text: cleanText, assignee: assignedTo });
+                                        
+                                        cleanText = cleanText.replace(/^[:\-–—]\s*/, '').trim();
+                                        if (cleanText) {
+                                            results.push({ text: cleanText, assignee: assignedTo });
+                                        }
                                     }
                                 }
                             }
@@ -1879,7 +1871,7 @@ end $$;
                     let tasksFound = scanNodesForTasks(startIndex);
                     
                     if (tasksFound.length === 0) { 
-                        showToast(`No assigned checklist items found under the section for ${targetHeader ? targetHeader.dateStr : 'this meeting'}.`); 
+                        showToast(`No assigned checklist items found under the action items section for ${targetHeader ? targetHeader.dateStr : 'this meeting'}.`); 
                     } 
                     else {
                         let createdCount = 0;
