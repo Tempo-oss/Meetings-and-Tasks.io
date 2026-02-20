@@ -1152,6 +1152,7 @@ end $$;
             const assignmentTimeout = useRef(null);
             const completionTimeout = useRef(null);
             const toastTimeout = useRef(null);
+            const fetchTimeoutRef = useRef(null);
 
             const showToast = useCallback((message, onUndo) => {
                 if (toastTimeout.current) clearTimeout(toastTimeout.current);
@@ -1184,6 +1185,17 @@ end $$;
                 }
             }, [meetings]);
 
+            // Helper to ensure we use the state client
+            const client = supabaseClient; 
+
+            // -- DEBOUNCED FETCH FOR REALTIME SPAM PREVENTION --
+            const triggerBackgroundFetch = useCallback(() => {
+                if (fetchTimeoutRef.current) clearTimeout(fetchTimeoutRef.current);
+                fetchTimeoutRef.current = setTimeout(() => {
+                    fetchData(supabaseClient, true);
+                }, 2000); // 2 second debounce for realtime event bursts
+            }, [supabaseClient]);
+
             useEffect(() => {
                 if (!supabaseClient) { 
                     if(window.supabase) setLoading(false); 
@@ -1198,7 +1210,7 @@ end $$;
                         const role = getSystemRole(session.user.email);
                         setCurrentUser({ id: session.user.id, name: session.user.user_metadata.full_name || session.user.email, email: session.user.email, system_role: role, avatar: (session.user.user_metadata.full_name || 'U').substring(0, 2).toUpperCase(), color: 'bg-indigo-600' });
                         setLoading(false);
-                        fetchData(client); 
+                        fetchData(supabaseClient); 
                     } else {
                         setLoading(false);
                     }
@@ -1210,16 +1222,17 @@ end $$;
                     if (session) {
                         const role = getSystemRole(session.user.email);
                         setCurrentUser({ id: session.user.id, name: session.user.user_metadata.full_name || session.user.email, email: session.user.email, system_role: role, avatar: (session.user.user_metadata.full_name || 'U').substring(0, 2).toUpperCase(), color: 'bg-indigo-600' });
-                        fetchData(client);
+                        
+                        // Prevent fetching loop by ensuring it's an actionable startup/auth event
+                        if (event === 'INITIAL_SESSION' || event === 'SIGNED_IN') {
+                            fetchData(supabaseClient);
+                        }
                     } else {
                         setCurrentUser(null); setMeetings([]); setTasks([]); setTeamMembers([]); setView('dashboard');
                     }
                 });
                 return () => subscription.unsubscribe();
             }, [supabaseClient]);
-
-            // Helper to ensure we use the state client
-            const client = supabaseClient; 
 
             // -- EMAIL QUEUE HELPER --
             const queueEmail = async (to, subject, body) => {
@@ -1412,7 +1425,10 @@ end $$;
                     const { data: t, error: tErr } = await sbClient.from('tasks').select('*').range(0, 9999);
                     const { data: tm, error: tmErr } = await sbClient.from('team_members').select('*');
 
-                    if (mErr || tErr) throw new Error("Fetch failed");
+                    if (mErr) console.error("Meetings Fetch Error:", mErr);
+                    if (tErr) console.error("Tasks Fetch Error:", tErr);
+
+                    if (mErr || tErr) throw new Error(`Fetch failed: ${mErr?.message || tErr?.message || 'Unknown network/DB error'}`);
 
                     const parsedM = m.map(x => ({ ...x, participants: typeof x.participants === 'string' ? JSON.parse(x.participants) : x.participants || [] }));
                     const parsedT = t.map(x => ({ ...x, meetingId: x.meeting_id }));
@@ -1428,23 +1444,24 @@ end $$;
 
                     checkAndSendReminders(parsedT, colleaguesList);
                 } catch (err) {
-                    if (err.code === 'TABLE_MISSING') setDbStatus('setup_required'); else { console.error(err); setDbStatus('error'); setErrorMsg(err.message); }
+                    if (err.code === 'TABLE_MISSING') setDbStatus('setup_required'); else { console.error("fetchData caught error:", err); setDbStatus('error'); setErrorMsg(err.message); }
                 }
             };
 
+            const userId = session?.user?.id;
             useEffect(() => {
-                if (!supabaseClient || !session) return;
+                if (!supabaseClient || !userId) return;
 
                 const channel = supabaseClient.channel('realtime_updates')
-                    .on('postgres_changes', { event: '*', schema: 'public', table: 'meetings' }, () => fetchData(supabaseClient, true))
-                    .on('postgres_changes', { event: '*', schema: 'public', table: 'tasks' }, () => fetchData(supabaseClient, true))
-                    .on('postgres_changes', { event: '*', schema: 'public', table: 'team_members' }, () => fetchData(supabaseClient, true))
+                    .on('postgres_changes', { event: '*', schema: 'public', table: 'meetings' }, triggerBackgroundFetch)
+                    .on('postgres_changes', { event: '*', schema: 'public', table: 'tasks' }, triggerBackgroundFetch)
+                    .on('postgres_changes', { event: '*', schema: 'public', table: 'team_members' }, triggerBackgroundFetch)
                     .subscribe();
 
                 return () => {
                     supabaseClient.removeChannel(channel);
                 };
-            }, [supabaseClient, session]);
+            }, [supabaseClient, userId, triggerBackgroundFetch]);
 
             const handleSync = async () => {
                 if (!session?.provider_token) { alert("Sync Unavailable: Missing Google Access Token. Please re-login."); return; }
