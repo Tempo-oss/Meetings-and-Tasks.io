@@ -1785,14 +1785,25 @@ end $$;
                         }
                     });
 
-                    // IDENTIFY THE FIRST DATE HEADER
-                    let targetHeader = meetingHeaders.length > 0 ? meetingHeaders[0] : null;
+                    // IDENTIFY ALL DATE HEADERS & FIND THE CHRONOLOGICALLY LATEST ONE
+                    let targetHeader = null;
+                    if (meetingHeaders.length > 0) {
+                        targetHeader = meetingHeaders.reduce((latest, current) => {
+                            return new Date(current.dateStr) > new Date(latest.dateStr) ? current : latest;
+                        }, meetingHeaders[0]);
+                    }
 
-                    // EXTRACT ONLY FROM THIS DATE HEADER FORWARD
+                    // EXTRACT ONLY FROM THIS LATEST DATE HEADER FORWARD
                     let startIndex = targetHeader ? targetHeader.index + 1 : 0;
                     
-                    // IF ANOTHER HEADER APPEARS, STOP IMMEDIATELY
-                    let stopIndex = meetingHeaders.length > 1 ? meetingHeaders[1].index : flatNodes.length;
+                    // IF ANOTHER HEADER APPEARS AFTER IT IN THE DOC, STOP IMMEDIATELY
+                    let stopIndex = flatNodes.length;
+                    if (targetHeader) {
+                        const nextHeader = meetingHeaders.find(h => h.index > targetHeader.index);
+                        if (nextHeader) {
+                            stopIndex = nextHeader.index;
+                        }
+                    }
 
                     const scanNodesForTasks = (startIdx, endIdx) => {
                         const results = [];
