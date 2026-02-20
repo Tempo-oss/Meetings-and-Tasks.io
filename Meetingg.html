@@ -624,7 +624,7 @@ end $$;
             );
         };
 
-        const ReportsView = ({ meetings, tasks, attendees }) => {
+        const ReportsView = ({ meetings, tasks, attendees, teamMembers }) => {
             const [filterOwner, setFilterOwner] = useState('all');
             const [filterStatus, setFilterStatus] = useState('all');
             const [filterDate, setFilterDate] = useState('');
@@ -668,61 +668,54 @@ end $$;
             }, [tasks, attendees, chartStartDate, chartEndDate]);
             const maxChartVal = Math.max(...chartData.map(d => d.total), 1);
 
-            const meetingsByTitle = useMemo(() => {
-                const groups = {};
-                meetings.forEach(m => {
-                    const t = m.title || '(No Title)';
-                    if (!groups[t]) groups[t] = [];
-                    groups[t].push(m);
-                });
-                return groups;
-            }, [meetings]);
-
-            const reportData = useMemo(() => {
+            // New Flat Report Data mapped to a Table
+            const flatReportData = useMemo(() => {
                 const data = [];
                 const getAssigneeEmail = (idOrEmail) => {
                     const user = attendees.find(u => u.id === idOrEmail || u.email === idOrEmail);
                     return user && user.email ? user.email : idOrEmail;
                 };
+                
+                const getManager = (userEmail) => {
+                    const member = teamMembers.find(tm => tm.email === userEmail);
+                    if (!member || !member.team || member.team === 'Unassigned') return '-';
+                    const manager = teamMembers.find(m => (m.team === member.team && m.role === 'Owner') || (m.managed_teams && m.managed_teams.includes(member.team)));
+                    return manager ? manager.name || manager.email : '-';
+                };
 
-                Object.keys(meetingsByTitle).forEach(title => {
-                    let meetingInstances = meetingsByTitle[title];
-                    if (filterDate) {
-                        meetingInstances = meetingInstances.filter(m => m.date === filterDate);
-                    }
-                    if (meetingInstances.length === 0) return;
+                tasks.forEach(task => {
+                    const ownerEmail = getAssigneeEmail(task.assignee);
+                    if (filterOwner !== 'all' && ownerEmail !== filterOwner) return;
+                    
+                    const status = task.status || (task.done ? 'completed' : 'pending');
+                    if (filterStatus !== 'all' && status !== filterStatus) return;
 
-                    const instanceIds = meetingInstances.map(m => m.id);
-                    const relevantTasks = tasks.filter(t => instanceIds.includes(t.meetingId));
-                    if (relevantTasks.length === 0) return;
+                    const mtg = meetings.find(m => m.id === task.meetingId);
+                    const source = mtg ? mtg.title : (task.meeting_id === 'standalone' ? 'Personal Task' : 'Unknown');
+                    const dateAssigned = task.start_date || (mtg ? mtg.date : '') || 'N/A';
+                    
+                    if (filterDate && dateAssigned !== filterDate) return;
 
-                    const tasksByOwner = {};
-                    let hasVisibleTasks = false;
-
-                    relevantTasks.forEach(task => {
-                        const ownerEmail = getAssigneeEmail(task.assignee);
-                        if (filterOwner !== 'all' && ownerEmail !== filterOwner) return;
-                        
-                        const status = task.status || (task.done ? 'completed' : 'pending');
-                        if (filterStatus !== 'all' && status !== filterStatus) return;
-
-                        hasVisibleTasks = true;
-                        const ownerId = ownerEmail || 'Unassigned';
-                        if (!tasksByOwner[ownerId]) {
-                            const owner = attendees.find(u => u.email === ownerId) || { name: 'Unknown', email: ownerId };
-                            tasksByOwner[ownerId] = { owner, tasks: [], pendingCount: 0, completedCount: 0 };
-                        }
-                        tasksByOwner[ownerId].tasks.push(task);
-                        if (status === 'completed') tasksByOwner[ownerId].completedCount++;
-                        else tasksByOwner[ownerId].pendingCount++;
+                    const ownerUser = attendees.find(u => u.email === ownerEmail) || { name: ownerEmail };
+                    
+                    data.push({
+                        id: task.id,
+                        text: task.text,
+                        status: status,
+                        owner: ownerUser.name || ownerEmail || 'Unassigned',
+                        manager: getManager(ownerEmail),
+                        dateAssigned: dateAssigned,
+                        dueDate: task.end_date || 'N/A',
+                        source: source
                     });
-
-                    if (hasVisibleTasks) {
-                        data.push({ title, owners: Object.values(tasksByOwner) });
-                    }
                 });
-                return data;
-            }, [meetingsByTitle, tasks, attendees, filterOwner, filterStatus, filterDate]);
+                
+                return data.sort((a, b) => {
+                    const dateA = new Date(a.dateAssigned === 'N/A' ? 0 : a.dateAssigned);
+                    const dateB = new Date(b.dateAssigned === 'N/A' ? 0 : b.dateAssigned);
+                    return dateA - dateB;
+                });
+            }, [tasks, meetings, attendees, teamMembers, filterOwner, filterStatus, filterDate]);
 
             const clearFilters = () => {
                 setFilterOwner('all');
@@ -782,13 +775,17 @@ end $$;
                                               {/* Completed Segment (Blue) */}
                                               <div 
                                                   style={{ height: `${(d.completed / d.total) * 100}%` }} 
-                                                  className="bg-tempo-blue w-full transition-all duration-500 relative"
-                                              ></div>
+                                                  className="bg-tempo-blue w-full transition-all duration-500 relative flex items-center justify-center overflow-hidden"
+                                              >
+                                                  {d.completed > 0 && <span className="text-[10px] font-bold text-white shadow-sm">{d.completed}</span>}
+                                              </div>
                                               {/* Pending Segment (Yellow) */}
                                               <div 
                                                   style={{ height: `${(d.pending / d.total) * 100}%` }} 
-                                                  className="bg-tempo-yellow w-full transition-all duration-500 relative"
-                                              ></div>
+                                                  className="bg-tempo-yellow w-full transition-all duration-500 relative flex items-center justify-center overflow-hidden"
+                                              >
+                                                  {d.pending > 0 && <span className="text-[10px] font-bold text-gray-900 shadow-sm">{d.pending}</span>}
+                                              </div>
                                           </div>
                                           
                                           <div className="text-[10px] text-gray-500 dark:text-gray-400 mt-2 truncate w-full text-center font-medium" title={d.name}>{d.name}</div>
@@ -804,7 +801,7 @@ end $$;
                         </div>
                     </div>
 
-                    {/* Filters and List... (styling updated) */}
+                    {/* Filters and List... */}
                       <div className="bg-white dark:bg-gray-800 p-4 rounded-xl border border-gray-200 dark:border-gray-700 flex flex-wrap gap-4 items-end shadow-sm transition-colors">
                         <div className="flex flex-col gap-1 w-full sm:w-auto flex-1 min-w-[150px]">
                             <label className="text-[10px] font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider">Owner</label>
@@ -833,55 +830,50 @@ end $$;
                         </button>
                     </div>
 
-                    {/* ... Report List ... */}
+                    {/* Report Table List */}
                     {reportGenerated && (
-                        <>
-                          {reportData.length === 0 ? (
-                            <div className="text-center py-12 text-gray-500 dark:text-gray-400 bg-white dark:bg-gray-800 rounded-xl border border-dashed border-gray-300 dark:border-gray-700">No tasks found matching your filters.</div>
-                        ) : (
-                            <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
-                                {reportData.map(({ title, owners }) => (
-                                    <div key={title} className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden">
-                                        <div className="p-4 bg-gray-50 dark:bg-gray-900/50 border-b border-gray-200 dark:border-gray-700 flex justify-between items-center">
-                                            <h3 className="font-bold text-gray-800 dark:text-gray-100 flex items-center"><Icon name="Calendar" className="w-4 h-4 mr-2 text-tempo-blue" />{title}</h3>
-                                            {filterDate ? <span className="text-xs text-gray-500 dark:text-gray-400">{filterDate}</span> : <span className="text-xs text-gray-500 dark:text-gray-400">Aggregate Report</span>}
-                                        </div>
-                                        <div className="divide-y divide-gray-100 dark:divide-gray-700">
-                                            {owners.map(({ owner, tasks, pendingCount, completedCount }) => (
-                                                <div key={owner.email || owner.id} className="p-4">
-                                                    <div className="flex items-center justify-between mb-3">
-                                                        <div className="flex items-center space-x-2">
-                                                            <UserAvatar user={owner} size="sm" />
-                                                            <span className="text-sm font-semibold text-gray-800 dark:text-gray-200">{owner.name || owner.email}</span>
-                                                        </div>
-                                                        <div className="flex space-x-2 text-xs">
-                                                            <span className="px-2 py-1 bg-tempo-yellow/20 text-yellow-800 dark:text-yellow-400 rounded-full font-medium">{pendingCount} Pending</span>
-                                                            <span className="px-2 py-1 bg-tempo-blue/10 dark:bg-tempo-blue/20 text-tempo-blue dark:text-blue-300 rounded-full font-medium">{completedCount} Completed</span>
-                                                        </div>
-                                                    </div>
-                                                    <div className="pl-10 space-y-2">
-                                                        {tasks.map(task => {
-                                                            const taskMeeting = meetings.find(m => m.id === task.meetingId);
-                                                            const dateLabel = taskMeeting ? taskMeeting.date : (task.start_date || 'No Date');
-                                                            return (
-                                                                <div key={task.id} className="text-sm flex flex-col border-l-2 border-gray-100 dark:border-gray-700 pl-3 py-1">
-                                                                    <div className="flex justify-between items-start gap-2">
-                                                                        <span className={`flex-1 break-words ${(task.status || (task.done?'completed':'pending')) === 'completed' ? 'text-gray-600 dark:text-gray-400' : 'text-gray-700 dark:text-gray-200'}`}>{task.text}</span>
-                                                                        <span className="shrink-0 text-[10px] font-mono text-gray-400 dark:text-gray-500 bg-gray-50 dark:bg-gray-700 px-1.5 py-0.5 rounded">{dateLabel}</span>
-                                                                    </div>
-                                                                    {task.obstacles && <span className="ml-0 mt-1 w-fit text-xs text-tempo-red dark:text-red-400 bg-tempo-red/10 px-2 py-0.5 rounded border border-tempo-red/20 max-w-full truncate">Obstacle: {task.obstacles}</span>}
-                                                                </div>
-                                                            );
-                                                        })}
-                                                    </div>
-                                                </div>
-                                            ))}
-                                        </div>
-                                    </div>
-                                ))}
+                        <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden shadow-sm animate-in fade-in slide-in-from-bottom-4 duration-500">
+                            <div className="p-4 bg-gray-50 dark:bg-gray-900/50 border-b border-gray-200 dark:border-gray-700 flex justify-between items-center">
+                                <h3 className="font-bold text-gray-800 dark:text-gray-100 flex items-center"><Icon name="FileText" className="w-4 h-4 mr-2 text-tempo-blue" /> Generated Report</h3>
+                                <span className="text-xs text-gray-500 dark:text-gray-400">{flatReportData.length} tasks found</span>
                             </div>
-                        )}
-                        </>
+                            <div className="overflow-x-auto">
+                                <table className="w-full text-left text-sm text-gray-600 dark:text-gray-300">
+                                    <thead className="bg-gray-50 dark:bg-gray-800/50 text-gray-500 dark:text-gray-400 uppercase text-[10px] font-bold tracking-wider border-b border-gray-200 dark:border-gray-700">
+                                        <tr>
+                                            <th className="px-4 py-3">Task</th>
+                                            <th className="px-4 py-3">Status</th>
+                                            <th className="px-4 py-3">Owner</th>
+                                            <th className="px-4 py-3">Manager</th>
+                                            <th className="px-4 py-3">Date Assigned</th>
+                                            <th className="px-4 py-3">Due Date</th>
+                                            <th className="px-4 py-3">Source</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-gray-100 dark:divide-gray-700/50">
+                                        {flatReportData.length === 0 ? (
+                                            <tr><td colSpan="7" className="px-4 py-8 text-center text-gray-500">No tasks found matching your filters.</td></tr>
+                                        ) : (
+                                            flatReportData.map(row => (
+                                                <tr key={row.id} className="hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors">
+                                                    <td className="px-4 py-3 font-medium text-gray-800 dark:text-gray-200 max-w-[200px] truncate" title={row.text}>{row.text}</td>
+                                                    <td className="px-4 py-3">
+                                                        <span className={`px-2 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${row.status === 'completed' ? 'bg-tempo-blue/10 text-tempo-blue dark:text-blue-400' : 'bg-tempo-yellow/20 text-yellow-800 dark:text-yellow-500'}`}>
+                                                            {row.status}
+                                                        </span>
+                                                    </td>
+                                                    <td className="px-4 py-3 whitespace-nowrap">{row.owner}</td>
+                                                    <td className="px-4 py-3 whitespace-nowrap text-gray-500 dark:text-gray-400">{row.manager}</td>
+                                                    <td className="px-4 py-3 text-xs whitespace-nowrap">{row.dateAssigned}</td>
+                                                    <td className="px-4 py-3 text-xs whitespace-nowrap">{row.dueDate}</td>
+                                                    <td className="px-4 py-3 text-xs max-w-[150px] truncate text-gray-500 dark:text-gray-400" title={row.source}>{row.source}</td>
+                                                </tr>
+                                            ))
+                                        )}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
                     )}
                 </div>
             );
@@ -893,6 +885,7 @@ end $$;
             const [newTeam, setNewTeam] = useState(DEPARTMENTS[0]);
             const [newRole, setNewRole] = useState('Member');
             const [newSystemRole, setNewSystemRole] = useState('user');
+            const [unassignedExpanded, setUnassignedExpanded] = useState(false);
 
             const handleSubmit = (e) => {
                 e.preventDefault();
@@ -933,31 +926,43 @@ end $$;
                             <input type="text" placeholder="Name" value={newName} onChange={(e) => setNewName(e.target.value)} className="flex-1 px-4 py-2 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white rounded-lg focus:ring-2 focus:ring-tempo-blue outline-none"/>
                             <input type="email" placeholder="Email (@tempo.fit)" value={newEmail} onChange={(e) => setNewEmail(e.target.value)} className="flex-1 px-4 py-2 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white rounded-lg focus:ring-2 focus:ring-tempo-blue outline-none"/>
                             <select value={newTeam} onChange={(e) => setNewTeam(e.target.value)} className="px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-tempo-blue outline-none bg-white dark:bg-gray-700 text-gray-900 dark:text-white flex-1">{DEPARTMENTS.map(d => <option key={d} value={d}>{d}</option>)}</select>
-                            <select value={newRole} onChange={(e) => setNewRole(e.target.value)} className="px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-tempo-blue outline-none bg-white dark:bg-gray-700 text-gray-900 dark:text-white flex-1"><option value="Member">Member</option><option value="Owner">Owner</option></select>
-                            <select value={newSystemRole} onChange={(e) => setNewSystemRole(e.target.value)} className="px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-tempo-blue outline-none bg-white dark:bg-gray-700 text-gray-900 dark:text-white flex-1" title="System Role"><option value="user">User (Restricted)</option><option value="admin">Admin (Full Access)</option></select>
+                            <select value={newRole} onChange={(e) => setNewRole(e.target.value)} title="Team Role (Member/Manager)" className="px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-tempo-blue outline-none bg-white dark:bg-gray-700 text-gray-900 dark:text-white flex-1"><option value="Member">Member</option><option value="Owner">Team Manager</option></select>
+                            <select value={newSystemRole} onChange={(e) => setNewSystemRole(e.target.value)} title="App Access (User/Admin)" className="px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-tempo-blue outline-none bg-white dark:bg-gray-700 text-gray-900 dark:text-white flex-1"><option value="user">App User</option><option value="admin">App Admin</option></select>
                             <button type="submit" className="tempo-btn px-6 py-2 font-medium">Add</button>
                         </form>
                     </div>
 
+                    {/* Collapsible Unassigned List */}
                     {displayUnassigned.length > 0 && (
                         <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden shadow-sm transition-colors">
-                            <div className="p-4 bg-gray-50 dark:bg-gray-900/50 border-b border-gray-200 dark:border-gray-700"><h3 className="font-bold text-gray-800 dark:text-gray-100">Unassigned / Discovered</h3></div>
-                            <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-4">
-                                {displayUnassigned.map(m => {
-                                    const email = m.email || m.id;
-                                    return (
-                                        <div key={email} className="flex flex-col sm:flex-row items-center gap-2 p-2 hover:bg-gray-50 dark:hover:bg-gray-700 rounded-lg transition-colors border border-gray-100 dark:border-gray-600">
-                                            <div className="flex items-center space-x-2 flex-1 w-full"><UserAvatar user={m} size="xs" /><div className="truncate"><p className="text-sm text-gray-800 dark:text-gray-200 truncate">{m.name || email}</p><p className="text-[10px] text-gray-500 dark:text-gray-400 truncate">{email}</p></div></div>
-                                            <div className="flex gap-1 w-full sm:w-auto items-center">
-                                                <select value={m.team || ''} onChange={(e) => onUpdateMember(email, { team: e.target.value })} className="text-[10px] border-gray-200 dark:border-gray-600 rounded p-1 bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none w-1/2 sm:w-auto min-w-[80px]"><option value="">Select Team</option>{DEPARTMENTS.map(d => <option key={d} value={d}>{d}</option>)}<option value="">Unassigned</option></select>
-                                                <select value={m.role || 'Member'} onChange={(e) => onUpdateMember(email, { role: e.target.value })} className="text-[10px] border-gray-200 dark:border-gray-600 rounded p-1 bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none w-1/2 sm:w-auto"><option value="Member">Member</option><option value="Owner">Owner</option></select>
-                                                <select value={m.system_role || 'user'} onChange={(e) => onUpdateMember(email, { system_role: e.target.value })} className="text-[10px] border-gray-200 dark:border-gray-600 rounded p-1 bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none w-1/2 sm:w-auto"><option value="user">User</option><option value="admin">Admin</option></select>
-                                                <button onClick={() => handleRemoveTeamMember(email)} className="text-gray-400 dark:text-gray-500 hover:text-tempo-red dark:hover:text-red-400 p-1" title="Remove"><Icon name="Trash2" className="w-4 h-4" /></button>
+                            <button 
+                                onClick={() => setUnassignedExpanded(!unassignedExpanded)}
+                                className="w-full p-4 bg-gray-50 dark:bg-gray-900/50 border-b border-gray-200 dark:border-gray-700 flex justify-between items-center hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+                            >
+                                <h3 className="font-bold text-gray-800 dark:text-gray-100 flex items-center">
+                                    Unassigned / Discovered 
+                                    <span className="ml-2 text-xs bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-300 px-2 py-0.5 rounded-full">{displayUnassigned.length}</span>
+                                </h3>
+                                <Icon name="ChevronLeft" className={`w-5 h-5 text-gray-500 transition-transform ${unassignedExpanded ? 'rotate-90' : '-rotate-90'}`} />
+                            </button>
+                            {unassignedExpanded && (
+                                <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    {displayUnassigned.map(m => {
+                                        const email = m.email || m.id;
+                                        return (
+                                            <div key={email} className="flex flex-col sm:flex-row items-center gap-2 p-3 hover:bg-gray-50 dark:hover:bg-gray-700 rounded-lg transition-colors border border-gray-100 dark:border-gray-600">
+                                                <div className="flex items-center space-x-3 flex-1 w-full"><UserAvatar user={m} size="xs" /><div className="truncate"><p className="text-sm font-medium text-gray-800 dark:text-gray-200 truncate">{m.name || email}</p><p className="text-[10px] text-gray-500 dark:text-gray-400 truncate">{email}</p></div></div>
+                                                <div className="flex gap-1.5 w-full sm:w-auto items-center flex-wrap sm:flex-nowrap mt-2 sm:mt-0">
+                                                    <select value={m.team || ''} onChange={(e) => onUpdateMember(email, { team: e.target.value })} title="Team" className="text-[10px] border-gray-200 dark:border-gray-600 rounded p-1.5 bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-tempo-blue w-1/2 sm:w-auto min-w-[90px]"><option value="">Select Team</option>{DEPARTMENTS.map(d => <option key={d} value={d}>{d}</option>)}<option value="">Unassigned</option></select>
+                                                    <select value={m.role || 'Member'} onChange={(e) => onUpdateMember(email, { role: e.target.value })} title="Team Role" className="text-[10px] border-gray-200 dark:border-gray-600 rounded p-1.5 bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-tempo-blue w-1/2 sm:w-auto"><option value="Member">Member</option><option value="Owner">Manager</option></select>
+                                                    <select value={m.system_role || 'user'} onChange={(e) => onUpdateMember(email, { system_role: e.target.value })} title="App Access Role" className="text-[10px] border-gray-200 dark:border-gray-600 rounded p-1.5 bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-tempo-blue w-1/2 sm:w-auto"><option value="user">User</option><option value="admin">Admin</option></select>
+                                                    <button onClick={() => handleRemoveTeamMember(email)} className="text-gray-400 dark:text-gray-500 hover:text-tempo-red dark:hover:text-red-400 p-1.5 bg-gray-50 dark:bg-gray-700 rounded ml-auto" title="Remove User"><Icon name="Trash2" className="w-4 h-4" /></button>
+                                                </div>
                                             </div>
-                                        </div>
-                                    );
-                                })}
-                            </div>
+                                        );
+                                    })}
+                                </div>
+                            )}
                         </div>
                     )}
 
@@ -977,7 +982,7 @@ end $$;
                                                     <div key={o.email} className="flex flex-col items-start gap-2 bg-tempo-yellow/10 dark:bg-tempo-yellow/20 p-2 rounded-lg border border-tempo-yellow/30 dark:border-yellow-800/50">
                                                         <div className="flex items-center space-x-2 w-full"><UserAvatar user={o} size="sm" /><div className="truncate flex-1"><p className="text-sm font-semibold text-gray-900 dark:text-gray-200 truncate">{o.name}</p><div className="flex items-center gap-1"><p className="text-xs text-gray-500 dark:text-gray-400 truncate">{o.email}</p>{o.system_role === 'admin' && <Icon name="Shield" className="w-3 h-3 text-tempo-blue dark:text-blue-400" title="Admin User"/>}</div></div></div>
                                                         {o.team === team ? (
-                                                            <div className="flex gap-1 w-full"><select value={o.team || ''} onChange={(e) => onUpdateMember(o.email, { team: e.target.value })} className="text-[10px] border border-tempo-yellow/40 dark:border-yellow-700 rounded p-1 bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none w-1/2">{DEPARTMENTS.map(d => <option key={d} value={d}>{d}</option>)}<option value="">Unassigned</option></select><select value={o.role || 'Member'} onChange={(e) => onUpdateMember(o.email, { role: e.target.value })} className="text-[10px] border border-tempo-yellow/40 dark:border-yellow-700 rounded p-1 bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none w-1/2"><option value="Member">Member</option><option value="Owner">Owner</option></select></div>
+                                                            <div className="flex gap-1 w-full"><select value={o.team || ''} onChange={(e) => onUpdateMember(o.email, { team: e.target.value })} title="Team" className="text-[10px] border border-tempo-yellow/40 dark:border-yellow-700 rounded p-1 bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none w-1/2">{DEPARTMENTS.map(d => <option key={d} value={d}>{d}</option>)}<option value="">Unassigned</option></select><select value={o.role || 'Member'} onChange={(e) => onUpdateMember(o.email, { role: e.target.value })} title="Team Role" className="text-[10px] border border-tempo-yellow/40 dark:border-yellow-700 rounded p-1 bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none w-1/2"><option value="Member">Member</option><option value="Owner">Manager</option></select></div>
                                                         ) : <span className="text-[10px] bg-tempo-blue/10 text-tempo-blue dark:text-blue-400 px-1 rounded">Via Managers</span>}
                                                     </div>
                                                 ))}
@@ -987,7 +992,7 @@ end $$;
                                             {regularMembers.length === 0 ? <p className="text-sm text-gray-400 dark:text-gray-500 italic">No members yet.</p> : regularMembers.map(m => (
                                                 <div key={m.email} className="flex flex-col gap-2 p-1.5 hover:bg-gray-50 dark:hover:bg-gray-700 rounded-lg transition-colors border border-transparent hover:border-gray-100 dark:hover:border-gray-600">
                                                     <div className="flex items-center space-x-2 w-full"><UserAvatar user={m} size="xs" /><div className="truncate flex-1"><p className="text-sm text-gray-800 dark:text-gray-200 truncate">{m.name}</p><div className="flex items-center gap-1"><p className="text-[10px] text-gray-500 dark:text-gray-400 truncate">{m.email}</p>{m.system_role === 'admin' && <Icon name="Shield" className="w-3 h-3 text-tempo-blue dark:text-blue-400" title="Admin User"/>}</div></div><button onClick={() => handleRemoveTeamMember(m.email)} className="text-gray-400 dark:text-gray-500 hover:text-tempo-red dark:hover:text-red-400 p-1" title="Remove"><Icon name="Trash2" className="w-3 h-3" /></button></div>
-                                                    <div className="flex gap-1 w-full"><select value={m.team || ''} onChange={(e) => onUpdateMember(m.email, { team: e.target.value })} className="text-[10px] border-gray-200 dark:border-gray-600 rounded p-1 bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none w-1/2">{DEPARTMENTS.map(d => <option key={d} value={d}>{d}</option>)}<option value="">Unassigned</option></select><select value={m.role || 'Member'} onChange={(e) => onUpdateMember(m.email, { role: e.target.value })} className="text-[10px] border-gray-200 dark:border-gray-600 rounded p-1 bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none w-1/2"><option value="Member">Member</option><option value="Owner">Owner</option></select></div>
+                                                    <div className="flex gap-1 w-full"><select value={m.team || ''} onChange={(e) => onUpdateMember(m.email, { team: e.target.value })} title="Team" className="text-[10px] border-gray-200 dark:border-gray-600 rounded p-1 bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none w-1/3"><option value="">Unassigned</option>{DEPARTMENTS.map(d => <option key={d} value={d}>{d}</option>)}</select><select value={m.role || 'Member'} onChange={(e) => onUpdateMember(m.email, { role: e.target.value })} title="Team Role" className="text-[10px] border-gray-200 dark:border-gray-600 rounded p-1 bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none w-1/3"><option value="Member">Member</option><option value="Owner">Manager</option></select><select value={m.system_role || 'user'} onChange={(e) => onUpdateMember(m.email, { system_role: e.target.value })} title="App Access Role" className="text-[10px] border-gray-200 dark:border-gray-600 rounded p-1 bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none w-1/3"><option value="user">User</option><option value="admin">Admin</option></select></div>
                                                     {m.team === 'Managers' && (<div className="w-full pt-1 border-t border-gray-100 dark:border-gray-700 mt-1"><p className="text-[10px] font-bold text-gray-400 dark:text-gray-500 mb-1">Manages:</p><div className="flex flex-wrap gap-1 mb-1">{(m.managed_teams || []).map(mt => (<span key={mt} className="text-[9px] bg-tempo-blue/10 dark:bg-tempo-blue/20 text-tempo-blue dark:text-blue-400 border border-tempo-blue/20 dark:border-blue-800 px-1 rounded flex items-center">{mt}<button onClick={() => handleRemoveManagedTeam(m.email, m.managed_teams, mt)} className="ml-1 hover:text-tempo-red dark:hover:text-red-400">×</button></span>))}</div><select value="" onChange={(e) => handleAddManagedTeam(m.email, m.managed_teams || [], e.target.value)} className="text-[10px] w-full border border-gray-200 dark:border-gray-600 rounded bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-white"><option value="">+ Add Team</option>{DEPARTMENTS.filter(d => d !== 'Managers').map(d => <option key={d} value={d}>{d}</option>)}</select></div>)}
                                                 </div>
                                             ))}
@@ -2253,7 +2258,7 @@ end $$;
                                 </div>
                             ) : dashboardViewMode === 'team' ? (
                                 <TeamList teamMembers={teamMembers} colleagues={colleagues} onAddMember={handleAddTeamMember} onUpdateMember={handleUpdateTeamMember} onRemoveMember={handleRemoveTeamMember}/>
-                            ) : ( <ReportsView meetings={meetings} tasks={tasks} attendees={allPossibleAssignees} /> )}
+                            ) : ( <ReportsView meetings={meetings} tasks={tasks} attendees={allPossibleAssignees} teamMembers={teamMembers} /> )}
                         </div></main>
 
                         {/* Global Toast Notification */}
