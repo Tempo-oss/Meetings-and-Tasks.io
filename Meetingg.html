@@ -1766,11 +1766,15 @@ end $$;
                         
                         const dateMatch = txt.match(dateRegex);
                         if (dateMatch && txt.length < 150 && !/^(\[ ?\]|\( ?\)|\u2610|\u2611)/.test(txt)) {
+                            // Timezone-safe parse
                             const ts = Date.parse(dateMatch[0]);
                             if (!isNaN(ts) && ts > new Date('2023-01-01').getTime()) {
+                                const d = new Date(ts);
+                                const offset = d.getTimezoneOffset() * 60000;
+                                const localIso = new Date(d.getTime() - offset).toISOString().split('T')[0];
                                 meetingHeaders.push({
                                     index: idx,
-                                    dateStr: new Date(ts).toISOString().split('T')[0],
+                                    dateStr: localIso,
                                     rawText: txt
                                 });
                             }
@@ -1779,6 +1783,7 @@ end $$;
 
                     let targetHeader = meetingHeaders.find(h => h.dateStr === meeting.date);
                     if (!targetHeader && meetingHeaders.length > 0) {
+                        console.log("Exact meeting date not found in doc headers. Falling back to the first header in doc.");
                         targetHeader = meetingHeaders[0]; // fallback to first header (usually top/latest)
                     }
 
@@ -1854,20 +1859,13 @@ end $$;
                     };
 
                     let tasksFound = scanNodesForTasks(startIndex, stopIndex);
-                    let usedDateFallback = false;
-
-                    if (targetHeader && tasksFound.length === 0) {
-                        console.log(`No tasks found in section for ${targetHeader.dateStr}. Retrying full doc scan.`);
-                        tasksFound = scanNodesForTasks(0, flatNodes.length);
-                        usedDateFallback = true;
-                    }
-
+                    
                     if (tasksFound.length === 0) { 
-                        alert("No assigned checklist items found in document."); 
+                        alert(`No assigned checklist items found under the section for ${targetHeader ? targetHeader.dateStr : 'this meeting'}.`); 
                     } 
                     else {
                         let createdCount = 0;
-                        const taskStartDate = (!usedDateFallback && targetHeader) ? targetHeader.dateStr : (meeting.date || getTodayISO()); 
+                        const taskStartDate = targetHeader ? targetHeader.dateStr : (meeting.date || getTodayISO()); 
                         const existingTexts = new Set(tasks.filter(t => t.meetingId === meeting.id).map(t => t.text.trim().toLowerCase()));
 
                         for (const task of tasksFound) {
@@ -1893,7 +1891,7 @@ end $$;
                         if (createdCount === 0) {
                             alert("No new tasks imported (duplicates skipped).");
                         } else {
-                            const msgSource = (!usedDateFallback && targetHeader) ? `section: ${targetHeader.dateStr}` : "entire doc";
+                            const msgSource = targetHeader ? `section: ${targetHeader.dateStr}` : "entire doc";
                             alert(`Imported ${createdCount} tasks from ${msgSource}!`);
                         }
                     }
