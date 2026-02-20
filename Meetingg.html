@@ -448,7 +448,7 @@ end $$;
                                     <button onClick={handleTextSave} className="text-green-600 hover:text-green-700"><Icon name="CheckCircle2" className="w-4 h-4"/></button>
                                 </div>
                             ) : (
-                                <div className={`text-sm ${isCompleted || isTrash ? 'text-gray-400 line-through decoration-gray-300' : 'text-gray-900 font-medium'}`}>
+                                <div className={`text-sm ${isTrash ? 'text-gray-400 line-through decoration-gray-300' : (isCompleted ? 'text-gray-700 font-medium' : 'text-gray-900 font-medium')}`}>
                                     {task.text}
                                     {isAdmin && !isTrash && (
                                         <button 
@@ -837,7 +837,7 @@ end $$;
                                                             return (
                                                                 <div key={task.id} className="text-sm flex flex-col border-l-2 border-gray-100 pl-3 py-1">
                                                                     <div className="flex justify-between items-start gap-2">
-                                                                        <span className={`flex-1 break-words ${(task.status || (task.done?'completed':'pending')) === 'completed' ? 'line-through text-gray-400' : 'text-gray-700'}`}>{task.text}</span>
+                                                                        <span className={`flex-1 break-words ${(task.status || (task.done?'completed':'pending')) === 'completed' ? 'text-gray-600' : 'text-gray-700'}`}>{task.text}</span>
                                                                         <span className="shrink-0 text-[10px] font-mono text-gray-400 bg-gray-50 px-1.5 py-0.5 rounded">{dateLabel}</span>
                                                                     </div>
                                                                     {task.obstacles && <span className="ml-0 mt-1 w-fit text-xs text-orange-600 bg-orange-50 px-2 py-0.5 rounded border border-orange-100 max-w-full truncate">Obstacle: {task.obstacles}</span>}
@@ -1001,8 +1001,9 @@ end $$;
                 onUpdateTask(taskId, { end_date: newDate });
             };
 
-            const activeTasks = tasks.filter(t => (t.status !== 'completed' && !t.done));
-            const completedTasks = tasks.filter(t => (t.status === 'completed' || t.done));
+            const activeTasks = tasks.filter(t => (t.status !== 'completed' && !t.done) && !t.deleted);
+            const completedTasks = tasks.filter(t => (t.status === 'completed' || t.done) && !t.deleted);
+            const trashTasks = tasks.filter(t => t.deleted);
 
             return (
                 <div className="flex flex-col h-full bg-white w-full">
@@ -1051,6 +1052,12 @@ end $$;
                             <div className="space-y-3 pt-6 border-t border-gray-200">
                                 <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">Completed</h3>
                                 {completedTasks.map(task => <TaskCard key={task.id} task={task} meetingTitle="" onStatusChange={handleStatusChange} onObstacleChange={handleObstacleChange} onDateChange={handleDateChange} currentUser={currentUser} onDelete={onDelete} onUpdateText={onUpdateText} onRestore={onRestore} isTrash={task.deleted} />)}
+                            </div>
+                        )}
+                        {trashTasks.length > 0 && (
+                            <div className="space-y-3 pt-6 border-t border-gray-200 opacity-80">
+                                <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3 flex items-center"><Icon name="Trash2" className="w-3 h-3 mr-1" /> Trash</h3>
+                                {trashTasks.map(task => <TaskCard key={task.id} task={task} meetingTitle="" onStatusChange={handleStatusChange} onObstacleChange={handleObstacleChange} onDateChange={handleDateChange} currentUser={currentUser} onDelete={onDelete} onUpdateText={onUpdateText} onRestore={onRestore} isTrash={true} />)}
                             </div>
                         )}
                     </div>
@@ -1126,6 +1133,7 @@ end $$;
             const [showQuickAdd, setShowQuickAdd] = useState(false); 
             const [showPast, setShowPast] = useState(false); // New state for toggling past meetings
             const [lastSynced, setLastSynced] = useState(null);
+            const [toast, setToast] = useState(null);
 
             const [meetings, setMeetings] = useState([]);
             const [tasks, setTasks] = useState([]);
@@ -1143,6 +1151,16 @@ end $$;
             const completionBuffer = useRef([]);
             const assignmentTimeout = useRef(null);
             const completionTimeout = useRef(null);
+            const toastTimeout = useRef(null);
+
+            const showToast = useCallback((message, onUndo) => {
+                if (toastTimeout.current) clearTimeout(toastTimeout.current);
+                const id = Date.now();
+                setToast({ id, message, onUndo });
+                toastTimeout.current = setTimeout(() => {
+                    setToast(null);
+                }, 5000);
+            }, []);
 
             useEffect(() => {
                 if (window.supabase) {
@@ -1752,14 +1770,21 @@ end $$;
                 const task = tasks.find(t => t.id === taskId);
                 const meeting = meetings.find(m => m.id === task?.meetingId);
                 
+                // Save previous state for potential undo
+                const prevStatus = task?.status;
+                const prevDone = task?.done;
+
                 setTasks(prev => prev.map(t => t.id === taskId ? { ...t, ...updates } : t));
                 if (dbStatus === 'connected' && client) { 
                     await client.from('tasks').update(updates).eq('id', taskId); 
                     
-                    // COMPLETION NOTIFICATION (Buffered)
+                    // COMPLETION NOTIFICATION & UNDO
                     if (updates.status === 'completed' || updates.done === true) {
-                        if (task) {
+                        if (task && prevStatus !== 'completed' && !prevDone) {
                             scheduleCompletionNotification({ ...task, ...updates }, meeting?.title || 'Unknown Meeting');
+                            showToast("Task marked as completed", () => {
+                                handleUpdateTask(taskId, { status: prevStatus, done: prevDone });
+                            });
                         }
                     }
                 }
@@ -1792,19 +1817,22 @@ end $$;
             };
 
             const handleDeleteTask = async (taskId) => {
-                // Soft delete
-                if (!confirm("Are you sure you want to move this task to trash?")) return;
                 setTasks(prev => prev.map(t => t.id === taskId ? { ...t, deleted: true } : t));
                 if (dbStatus === 'connected' && client) {
                     await client.from('tasks').update({ deleted: true }).eq('id', taskId);
                 }
+                showToast("Task moved to trash", () => handleRestoreTask(taskId, true));
             };
 
-            const handleRestoreTask = async (taskId) => {
-                if (!confirm("Restore this task from trash?")) return;
+            const handleRestoreTask = async (taskId, fromUndo = false) => {
                 setTasks(prev => prev.map(t => t.id === taskId ? { ...t, deleted: false } : t));
                 if (dbStatus === 'connected' && client) {
                     await client.from('tasks').update({ deleted: false }).eq('id', taskId);
+                }
+                if (fromUndo) {
+                    setToast(null);
+                } else {
+                    showToast("Task restored", () => handleDeleteTask(taskId));
                 }
             };
 
@@ -1925,12 +1953,6 @@ end $$;
             const filteredTasks = useMemo(() => {
                 let scopeFiltered = [];
                 const effectiveScope = isManager ? taskScope : (taskScope === 'assigned_by_me' ? 'assigned_by_me' : 'me');
-                
-                // If viewing Trash, show ALL deleted tasks for user
-                if (taskFilter === 'trash') {
-                    // Show deleted tasks where user is assignee OR assigner
-                    return tasks.filter(t => t.deleted && (t.assignee === currentUser?.id || t.assigner === currentUser?.id));
-                }
 
                 if (effectiveScope === 'me') {
                     const myEmail = (currentUser?.email || '').toLowerCase().trim();
@@ -1972,6 +1994,11 @@ end $$;
                     });
                 }
                 
+                // Ensure Trash filter handles its scope logically
+                if (taskFilter === 'trash') {
+                    return scopeFiltered.filter(t => t.deleted);
+                }
+
                 // Filter out deleted tasks for normal views
                 scopeFiltered = scopeFiltered.filter(t => !t.deleted);
 
@@ -2128,6 +2155,24 @@ end $$;
                                 <TeamList teamMembers={teamMembers} colleagues={colleagues} onAddMember={handleAddTeamMember} onUpdateMember={handleUpdateTeamMember} onRemoveMember={handleRemoveTeamMember}/>
                             ) : ( <ReportsView meetings={meetings} tasks={tasks} attendees={allPossibleAssignees} /> )}
                         </div></main>
+
+                        {/* Global Toast Notification */}
+                        {toast && (
+                            <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-gray-900 text-white px-5 py-3 rounded-lg shadow-2xl flex items-center gap-4 z-50 animate-in slide-in-from-bottom-5 fade-in duration-300 border border-gray-700">
+                                <span className="text-sm font-medium">{toast.message}</span>
+                                {toast.onUndo && (
+                                    <button 
+                                        onClick={toast.onUndo}
+                                        className="text-tempo-red font-bold text-sm hover:text-red-400 transition-colors uppercase tracking-wider pl-2 border-l border-gray-700"
+                                    >
+                                        Undo
+                                    </button>
+                                )}
+                                <button onClick={() => setToast(null)} className="text-gray-400 hover:text-white ml-1">
+                                    <Icon name="X" className="w-4 h-4" />
+                                </button>
+                            </div>
+                        )}
                     </div>
                 );
             }
@@ -2160,6 +2205,24 @@ end $$;
                         }} 
                         meetingId={m.id} teamMembers={teamMembers} onImport={() => handleImportFromDoc(m)} />
                     </div>
+
+                    {/* Global Toast Notification */}
+                    {toast && (
+                        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-gray-900 text-white px-5 py-3 rounded-lg shadow-2xl flex items-center gap-4 z-50 animate-in slide-in-from-bottom-5 fade-in duration-300 border border-gray-700">
+                            <span className="text-sm font-medium">{toast.message}</span>
+                            {toast.onUndo && (
+                                <button 
+                                    onClick={toast.onUndo}
+                                    className="text-tempo-red font-bold text-sm hover:text-red-400 transition-colors uppercase tracking-wider pl-2 border-l border-gray-700"
+                                >
+                                    Undo
+                                </button>
+                            )}
+                            <button onClick={() => setToast(null)} className="text-gray-400 hover:text-white ml-1">
+                                <Icon name="X" className="w-4 h-4" />
+                            </button>
+                        </div>
+                    )}
                 </div>
             );
         };
