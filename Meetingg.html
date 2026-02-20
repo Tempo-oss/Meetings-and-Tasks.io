@@ -1758,34 +1758,39 @@ end $$;
                     // --- EXECUTION ---
                     const flatNodes = flattenDoc(docData.body?.content);
                     
-                    const dateRegex = /\b(?:\d{4}-\d{2}-\d{2}|\d{1,2}\/\d{1,2}\/\d{4}|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s\d{1,2}(?:st|nd|rd|th)?(?:,?\s\d{4})?)\b/i;
+                    // Improved Regex for Date Headers (handles 10.15.2023, 10/15, October 15, etc.)
+                    const dateRegex = /\b(?:\d{4}[-\/.]\d{1,2}[-\/.]\d{1,2}|\d{1,2}[-\/.]\d{1,2}(?:[-\/.]\d{2,4})?|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s\d{1,2}(?:st|nd|rd|th)?(?:,?\s\d{2,4})?)\b/i;
                     
                     const meetingHeaders = [];
                     flatNodes.forEach((node, idx) => {
                         const txt = node.elements?.map(e => e.textRun?.content || '').join('').trim();
                         if (!txt) return;
                         
-                        // Exclude lines that are clearly bullets (tasks) from being considered headers
+                        // Exclude lines that are clearly bullets or checkboxes from being considered date headers
                         if (node.bullet) return;
+                        if (/^(\[ ?[xX]? ?\]|\( ?[xX]? ?\)|\u2610|\u2611)/i.test(txt)) return;
                         
                         const dateMatch = txt.match(dateRegex);
-                        if (dateMatch && txt.length < 150 && !/^(\[ ?\]|\( ?\)|\u2610|\u2611)/.test(txt)) {
+                        if (dateMatch && txt.length < 150) {
                             // Timezone-safe parse
                             const ts = Date.parse(dateMatch[0]);
-                            if (!isNaN(ts) && ts > new Date('2023-01-01').getTime()) {
+                            if (!isNaN(ts)) {
                                 const d = new Date(ts);
-                                const offset = d.getTimezoneOffset() * 60000;
-                                const localIso = new Date(d.getTime() - offset).toISOString().split('T')[0];
-                                meetingHeaders.push({
-                                    index: idx,
-                                    dateStr: localIso,
-                                    rawText: txt
-                                });
+                                // Sanity check to avoid parsing random numbers as ancient/future dates
+                                if (d.getFullYear() > 2000 && d.getFullYear() < 2100) {
+                                    const offset = d.getTimezoneOffset() * 60000;
+                                    const localIso = new Date(d.getTime() - offset).toISOString().split('T')[0];
+                                    meetingHeaders.push({
+                                        index: idx,
+                                        dateStr: localIso,
+                                        rawText: txt
+                                    });
+                                }
                             }
                         }
                     });
 
-                    // IDENTIFY ALL DATE HEADERS & FIND THE CHRONOLOGICALLY LATEST ONE
+                    // IDENTIFY THE CHRONOLOGICALLY LATEST DATE HEADER
                     let targetHeader = null;
                     if (meetingHeaders.length > 0) {
                         targetHeader = meetingHeaders.reduce((latest, current) => {
@@ -1795,21 +1800,12 @@ end $$;
 
                     // EXTRACT ONLY FROM THIS LATEST DATE HEADER FORWARD
                     let startIndex = targetHeader ? targetHeader.index + 1 : 0;
-                    
-                    // IF ANOTHER HEADER APPEARS AFTER IT IN THE DOC, STOP IMMEDIATELY
-                    let stopIndex = flatNodes.length;
-                    if (targetHeader) {
-                        const nextHeader = meetingHeaders.find(h => h.index > targetHeader.index);
-                        if (nextHeader) {
-                            stopIndex = nextHeader.index;
-                        }
-                    }
 
-                    const scanNodesForTasks = (startIdx, endIdx) => {
+                    const scanNodesForTasks = (startIdx) => {
                         const results = [];
                         let inActionItems = false;
                         
-                        for (let i = startIdx; i < endIdx; i++) {
+                        for (let i = startIdx; i < flatNodes.length; i++) {
                             const paraNode = flatNodes[i];
                             
                             let paraText = '';
@@ -1821,21 +1817,32 @@ end $$;
                             
                             let rawText = paraText.replace(/\u00A0/g, ' ').trim();
                             if (!rawText) continue;
+
+                            // STOP IMMEDIATELY IF A DIFFERENT (OLDER) DATE HEADER IS ENCOUNTERED
+                            if (targetHeader) {
+                                const thisHeader = meetingHeaders.find(h => h.index === i);
+                                if (thisHeader && new Date(thisHeader.dateStr) < new Date(targetHeader.dateStr)) {
+                                    console.log("Found older date header, stopping extraction.", thisHeader.dateStr);
+                                    break;
+                                }
+                            }
+
                             if (/^(attendees|participants|guests|cc|to):/i.test(rawText)) continue;
 
-                            if (/^(action items|next steps|to do|tasks):/i.test(rawText)) {
+                            // Mark when we enter the "Action items" section
+                            if (/^(action items|next steps|to do|tasks)(:| -)?/i.test(rawText)) {
                                 inActionItems = true;
                                 continue;
                             }
 
                             const isBullet = !!paraNode.bullet;
-                            const manualCheckboxRegex = /^(\[ ?\]|\( ?\)|\u2610|\u2611)\s*/;
+                            const manualCheckboxRegex = /^(\[ ?[xX]? ?\]|\( ?[xX]? ?\)|\u2610|\u2611|\u2714)\s*/i;
                             const isManualCheckbox = manualCheckboxRegex.test(rawText);
                             const hasPersonChip = richElements.length > 0;
                             
                             let startsWithUser = false;
                             const lowerRaw = rawText.toLowerCase();
-                            const allUsers = allPossibleAssignees; // Using the robust merged attendees prop
+                            const allUsers = allPossibleAssignees; 
                             for (const u of allUsers) {
                                 if (u.name && lowerRaw.startsWith(u.name.toLowerCase())) {
                                     startsWithUser = true;
@@ -1843,6 +1850,7 @@ end $$;
                                 }
                             }
 
+                            // Strictly extract ONLY if it's a structural task (bullet/checkbox) OR we are inside the Action Items section
                             if (isBullet || isManualCheckbox || hasPersonChip || startsWithUser || inActionItems) {
                                 let cleanText = rawText.replace(manualCheckboxRegex, '').replace(/^\u25CF\s*/, '').trim();
 
@@ -1855,10 +1863,12 @@ end $$;
                                             const nameRegex = new RegExp(`^@?${escapedName}\\s*`, 'i');
                                             cleanText = cleanText.replace(nameRegex, '').trim();
                                         }
-                                        cleanText = cleanText.replace(/^[:\-–—]\s*/, '').trim();
-                                        if (cleanText) {
-                                            results.push({ text: cleanText, assignee: assignedTo });
-                                        }
+                                    }
+                                    
+                                    cleanText = cleanText.replace(/^[:\-–—]\s*/, '').trim();
+                                    if (cleanText) {
+                                        // Only add if it hasn't been added (basic deduplication within same block)
+                                        results.push({ text: cleanText, assignee: assignedTo });
                                     }
                                 }
                             }
@@ -1866,7 +1876,7 @@ end $$;
                         return results;
                     };
 
-                    let tasksFound = scanNodesForTasks(startIndex, stopIndex);
+                    let tasksFound = scanNodesForTasks(startIndex);
                     
                     if (tasksFound.length === 0) { 
                         showToast(`No assigned checklist items found under the section for ${targetHeader ? targetHeader.dateStr : 'this meeting'}.`); 
