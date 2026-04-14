@@ -147,6 +147,7 @@ create table if not exists tasks (
     start_date date,
     end_date date,
     reminder_sent boolean default false,
+    last_reminded_date text,
     deleted boolean default false
 );
 
@@ -173,6 +174,7 @@ create table if not exists pending_emails (
 alter table meetings add column if not exists video_link text;
 alter table meetings add column if not exists google_doc_link text;
 alter table tasks add column if not exists assigner text;
+alter table tasks add column if not exists last_reminded_date text;
 alter table tasks add column if not exists deleted boolean default false;
 
 -- 3. Disable RLS to allow writing
@@ -282,7 +284,7 @@ end $$;
             );
         };
 
-        const AppHeader = ({ currentUser, onLogout, onSync, dbStatus, onBack, title, isSyncing, syncRange, setSyncRange, meeting, lastSynced, isDarkMode, toggleDarkMode }) => (
+        const AppHeader = ({ currentUser, onLogout, onSync, dbStatus, onBack, title, isSyncing, syncRange, setSyncRange, meeting, lastSynced, isDarkMode, toggleDarkMode, gcalSyncStatus }) => (
             <header className="bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800 h-16 flex items-center justify-between px-4 sm:px-6 shrink-0 sticky top-0 z-20 text-gray-900 dark:text-white transition-colors duration-200">
                 <div className="flex items-center space-x-4 flex-1 min-w-0">
                     {onBack ? (
@@ -302,8 +304,13 @@ end $$;
                         </div>
                     )}
 
-                    {dbStatus === 'connected' && <span className="hidden sm:inline-flex bg-tempo-blue/10 text-tempo-blue dark:bg-tempo-blue/20 dark:text-blue-300 text-[10px] uppercase font-bold tracking-wide px-2 py-0.5 rounded-full flex-shrink-0 ml-2">Live</span>}
+                    {dbStatus === 'connected' && <span className="hidden sm:inline-flex bg-tempo-blue/10 text-tempo-blue dark:bg-tempo-blue/20 dark:text-blue-300 text-[10px] uppercase font-bold tracking-wide px-2 py-0.5 rounded-full flex-shrink-0 ml-2">DB: Live</span>}
                     {dbStatus === 'setup_required' && <span className="hidden sm:inline-flex bg-tempo-red/10 text-tempo-red dark:bg-tempo-red/20 dark:text-red-300 text-[10px] uppercase font-bold tracking-wide px-2 py-0.5 rounded-full flex-shrink-0 ml-2">DB Setup</span>}
+                    
+                    {/* Real-time Google Calendar Status Badges */}
+                    {gcalSyncStatus === 'live' && <span className="hidden sm:inline-flex bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400 text-[10px] uppercase font-bold tracking-wide px-2 py-0.5 rounded-full flex-shrink-0 ml-1" title="Continuously synced with Google Calendar">GCal: Live</span>}
+                    {gcalSyncStatus === 'syncing' && <span className="hidden sm:inline-flex bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400 text-[10px] uppercase font-bold tracking-wide px-2 py-0.5 rounded-full flex-shrink-0 ml-1 animate-pulse">GCal: Syncing</span>}
+                    {gcalSyncStatus === 'stale' && <span className="hidden sm:inline-flex bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400 text-[10px] uppercase font-bold tracking-wide px-2 py-0.5 rounded-full flex-shrink-0 ml-1" title="Outdated data. Google sync paused or network error.">GCal: Stale</span>}
                 </div>
                 
                 <div className="flex items-center space-x-3 sm:space-x-4">
@@ -1183,6 +1190,14 @@ end $$;
             const [showPast, setShowPast] = useState(false); // New state for toggling past meetings
             const [lastSynced, setLastSynced] = useState(null);
             
+            const [gcalSyncStatus, setGcalSyncStatus] = useState('idle'); // 'idle', 'syncing', 'live', 'stale'
+            const meetingsRef = useRef([]);
+            const lastGcalSyncRef = useRef(null);
+
+            useEffect(() => {
+                meetingsRef.current = meetings;
+            }, [meetings]);
+
             const [toast, setToast] = useState(null);
             const [dialogConfig, setDialogConfig] = useState(null);
 
@@ -1484,35 +1499,190 @@ end $$;
                 completionTimeout.current = setTimeout(flushCompletionNotifications, 60000);
             };
 
-            // Immediate reminder (keep this separate as it's urgent)
-            const checkAndSendReminders = async (currentTasks, allAssignees) => {
-                if (!client) return;
-                const today = new Date();
-                today.setHours(0,0,0,0);
-                const twoDaysFromNow = new Date(today);
-                twoDaysFromNow.setDate(today.getDate() + 2);
-                
-                const tasksDueSoon = currentTasks.filter(t => {
-                    if (!t.end_date) return false;
-                    const due = new Date(t.end_date);
-                    due.setHours(0,0,0,0);
-                    return due <= twoDaysFromNow && due >= today && 
-                           !t.done && t.status !== 'completed' &&
-                           t.reminder_sent !== true && !t.deleted; // Check deleted flag
-                });
+            // --- REAL-TIME GOOGLE CALENDAR SYNC (INCREMENTAL POLLING) ---
+            const performIncrementalSync = useCallback(async () => {
+                if (!session?.provider_token || !client) return;
+                setGcalSyncStatus('syncing');
+                try {
+                    // Default to 30 days ago for first auto-sync if no deep sync happened recently
+                    const timeMinIso = lastGcalSyncRef.current || new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+                    const cacheBuster = new Date().getTime();
+                    
+                    const resp = await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events?updatedMin=${timeMinIso}&singleEvents=true&maxResults=2500&_${cacheBuster}`, {
+                        headers: { 
+                            Authorization: `Bearer ${session.provider_token}`,
+                            'Cache-Control': 'no-cache, no-store, must-revalidate'
+                        }
+                    });
+                    
+                    if (resp.status === 401) {
+                        setGcalSyncStatus('stale');
+                        if (lastGcalSyncRef.current) showToast("Google Sync Paused: Session expired. Please log out and sign in again.");
+                        return; 
+                    }
+                    if (!resp.ok) throw new Error("Google Sync Failed");
+                    
+                    const data = await resp.json();
+                    let changesDetected = false;
+                    const meetingBatch = [];
+                    const taskBatch = [];
+                    
+                    for (const event of data.items) {
+                        // Handle Deleted / Cancelled events
+                        if (event.status === 'cancelled') {
+                            const existing = meetingsRef.current.find(m => m.id === event.id);
+                            if (existing) {
+                                showToast(`Event Cancelled: "${existing.title}" was removed from Google Calendar.`);
+                                await client.from('meetings').delete().eq('id', event.id);
+                                changesDetected = true;
+                            }
+                            continue;
+                        }
+                        
+                        // Parse updated dates
+                        let dateStr, timeStr;
+                        if (event.start.date) {
+                            dateStr = event.start.date;
+                            timeStr = 'All Day';
+                        } else {
+                            const start = new Date(event.start.dateTime);
+                            const offset = start.getTimezoneOffset() * 60000;
+                            const localDate = new Date(start.getTime() - offset);
+                            dateStr = localDate.toISOString().split('T')[0];
+                            timeStr = start.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                        }
+                        
+                        // Detect and Log Specific Changes
+                        const existingMtg = meetingsRef.current.find(m => m.id === event.id);
+                        if (existingMtg) {
+                            if (existingMtg.date !== dateStr || existingMtg.time !== timeStr) {
+                                showToast(`Event Rescheduled: "${event.summary || 'Meeting'}" moved to ${dateStr} at ${timeStr}`);
+                                changesDetected = true;
+                            }
+                        } else if (lastGcalSyncRef.current !== null) {
+                             // Only notify of "New Events" if this isn't the very first blind load
+                             showToast(`New Event: "${event.summary || 'Meeting'}" added to your calendar.`);
+                             changesDetected = true;
+                        }
 
-                if (tasksDueSoon.length > 0) {
-                    for (const task of tasksDueSoon) {
-                        const assigneeId = task.assignee;
-                        if (!assigneeId) continue;
-                        const user = allAssignees.find(u => u.email === assigneeId || u.id === assigneeId);
-                        const email = user ? user.email : (assigneeId.includes('@') ? assigneeId : null);
-                        const name = user ? user.name : "there";
-                        if (email) {
-                            await queueEmail(email, `Reminder: Task Due Soon`, `Hi ${name},\n\nJust a reminder that the task "${task.text}" is due on ${task.end_date}.\n\n- TEMPO`);
-                            await client.from('tasks').update({ reminder_sent: true }).eq('id', task.id);
+                        // Prepare Batch Payload
+                        const attendeesList = event.attendees ? event.attendees.map(a => ({ id: a.email, email: a.email, name: a.displayName || a.email.split('@')[0], avatar: (a.displayName || a.email).substring(0,2).toUpperCase() })) : [];
+                        const safeAttendees = attendeesList.map(a => JSON.parse(JSON.stringify(a)));
+                        const userInAttendees = safeAttendees.find(a => a.email && a.email.toLowerCase() === currentUser?.email?.toLowerCase());
+                        if (!userInAttendees && currentUser) safeAttendees.push({ id: currentUser.id, email: currentUser.email, name: currentUser.name, avatar: currentUser.avatar });
+
+                        let videoLink = event.hangoutLink;
+                        if (!videoLink && event.location && (event.location.startsWith('http') || event.location.startsWith('https'))) { videoLink = event.location; }
+
+                        meetingBatch.push({ 
+                            id: event.id, 
+                            title: event.summary || '(No Title)', 
+                            date: dateStr, 
+                            time: timeStr, 
+                            duration: '1h', 
+                            participants: safeAttendees, 
+                            doc_id: `doc_${event.id}`, 
+                            google_calendar_id: event.id, 
+                            synced: true, 
+                            platform: 'Google Calendar',
+                            video_link: videoLink 
+                        });
+                        
+                        // Auto-extract tasks on the fly
+                        const description = event.description || '';
+                        const taskRegex = /(?:^|\n)(?:-? ?\[ ?\]|TODO:|Task:)\s*(.+)/gi;
+                        let match;
+                        while ((match = taskRegex.exec(description)) !== null) {
+                            const taskText = match[1].trim();
+                            if (taskText) {
+                                const taskId = `t_${event.id}_${taskText.substring(0, 5).replace(/\s/g, '')}`;
+                                taskBatch.push({ id: taskId, meeting_id: event.id, text: taskText, assignee: currentUser?.email, status: 'pending', deleted: false, last_reminded_date: getTodayISO() });
+                            }
                         }
                     }
+
+                    if (meetingBatch.length > 0) {
+                        await client.from('meetings').upsert(meetingBatch);
+                        changesDetected = true;
+                    }
+                    if (taskBatch.length > 0) {
+                        await client.from('tasks').upsert(taskBatch, { ignoreDuplicates: true });
+                    }
+
+                    if (changesDetected) triggerBackgroundFetch(); // Soft refresh UI
+
+                    lastGcalSyncRef.current = new Date().toISOString();
+                    setGcalSyncStatus('live');
+                } catch(e) {
+                    console.error("Auto-sync error:", e);
+                    setGcalSyncStatus('stale');
+                }
+            }, [session?.provider_token, client, showToast, triggerBackgroundFetch, currentUser]);
+
+            // Lifecycle: Start Real-Time Background Polling
+            useEffect(() => {
+                if (!session?.provider_token) {
+                    setGcalSyncStatus('idle');
+                    return;
+                }
+                
+                // 1. Immediate sync on session load
+                performIncrementalSync();
+                
+                // 2. Continuous 60s Polling
+                const intervalId = setInterval(performIncrementalSync, 60000);
+                
+                return () => clearInterval(intervalId);
+            }, [session?.provider_token, performIncrementalSync]);
+
+            // DISTRIBUTED CRON: Grouped Daily Check & Reminders
+            const checkAndSendReminders = async (currentTasks, allAssignees) => {
+                if (!client) return;
+                const todayStr = getTodayISO();
+
+                // 1. Identify tasks needing a daily reminder
+                const tasksNeedingReminder = currentTasks.filter(t => {
+                    return !t.done && t.status !== 'completed' && !t.deleted && t.last_reminded_date !== todayStr;
+                });
+
+                if (tasksNeedingReminder.length === 0) return;
+
+                // 2. Group tasks by assignee email to avoid email spam
+                const notificationsByEmail = {};
+                for (const task of tasksNeedingReminder) {
+                    const assigneeId = task.assignee;
+                    if (!assigneeId) continue;
+
+                    const user = allAssignees.find(u => u.email === assigneeId || u.id === assigneeId);
+                    const email = user ? user.email : (assigneeId.includes('@') ? assigneeId : null);
+                    const name = user ? user.name : "there";
+
+                    if (email) {
+                        if (!notificationsByEmail[email]) {
+                            notificationsByEmail[email] = { name, tasks: [] };
+                        }
+                        notificationsByEmail[email].tasks.push(task);
+                    }
+                }
+
+                // 3. Queue digest emails & Update the DB
+                for (const [email, data] of Object.entries(notificationsByEmail)) {
+                    const count = data.tasks.length;
+                    let body = `Hi ${data.name},\n\nHere is your daily reminder for your unresolved action item(s):\n\n`;
+
+                    data.tasks.forEach(t => {
+                        body += `[ ] ${t.text} (Due: ${t.end_date || 'No Date'})\n`;
+                    });
+
+                    const link = `${window.location.origin}${window.location.pathname}`;
+                    body += `\nView Dashboard: ${link}\n\n- TEMPO`;
+
+                    // Push email to queue
+                    await queueEmail(email, `Daily Reminder: ${count} Pending Task(s)`, body);
+
+                    // Flag as reminded today
+                    const taskIds = data.tasks.map(t => t.id);
+                    await client.from('tasks').update({ last_reminded_date: todayStr }).in('id', taskIds);
                 }
             };
 
@@ -1545,8 +1715,7 @@ end $$;
                     setColleagues(colleaguesList);
                     setMeetings(parsedM); setTasks(parsedT); setDbStatus(parsedM.length ? 'connected' : 'empty');
 
-                    // Note: checkAndSendReminders is safe here, but it triggers after allPossibleAssignees runs its first pass.
-                    // To be safe we pass it raw, but unified mapping logic in allPossibleAssignees handles it cleanly.
+                    // Check and trigger daily recurring reminders (Distributed Cron)
                     checkAndSendReminders(parsedT, [...parsedTeam, ...colleaguesList, ...(currentUser ? [currentUser] : [])]);
                 } catch (err) {
                     if (err.code === 'TABLE_MISSING') setDbStatus('setup_required'); else { console.error("fetchData caught error:", err); setDbStatus('error'); setErrorMsg(err.message); }
@@ -1557,14 +1726,14 @@ end $$;
             useEffect(() => {
                 if (!supabaseClient || !userId) return;
 
-                const channel = supabaseClient.channel('realtime_updates')
-                    .on('postgres_changes', { event: '*', schema: 'public', table: 'meetings' }, triggerBackgroundFetch)
-                    .on('postgres_changes', { event: '*', schema: 'public', table: 'tasks' }, triggerBackgroundFetch)
-                    .on('postgres_changes', { event: '*', schema: 'public', table: 'team_members' }, triggerBackgroundFetch)
-                    .subscribe();
+                // WebSockets are blocked in this environment.
+                // Fallback: Poll the database every 30 seconds for external updates.
+                const intervalId = setInterval(() => {
+                    triggerBackgroundFetch();
+                }, 30000);
 
                 return () => {
-                    supabaseClient.removeChannel(channel);
+                    clearInterval(intervalId);
                 };
             }, [supabaseClient, userId, triggerBackgroundFetch]);
 
@@ -1636,7 +1805,7 @@ end $$;
                             if (taskText) {
                                 const taskId = `t_${event.id}_${taskText.substring(0, 5).replace(/\s/g, '')}`;
                                 // Note: We now consistently use email for unified assignment mapping!
-                                taskBatch.push({ id: taskId, meeting_id: mId, text: taskText, assignee: currentUser.email, status: 'pending', deleted: false });
+                                taskBatch.push({ id: taskId, meeting_id: mId, text: taskText, assignee: currentUser.email, status: 'pending', deleted: false, last_reminded_date: getTodayISO() });
                             }
                         }
 
@@ -1696,9 +1865,12 @@ end $$;
                     setMeetings([]); 
                     await fetchData(client);
                     setLastSynced(new Date().toLocaleTimeString());
+                    lastGcalSyncRef.current = new Date().toISOString();
+                    setGcalSyncStatus('live');
                     
                 } catch (e) { 
-                    console.error("Sync failed:", e); 
+                    console.error("Sync failed:", e);
+                    setGcalSyncStatus('stale');
                 } finally { 
                     setIsSyncing(false); 
                 }
@@ -1890,7 +2062,7 @@ end $$;
 
                              const taskId = `t_doc_${Date.now()}_${Math.floor(Math.random()*10000)}`;
                              // Uses email for assigner mapping consistency
-                             const newTaskObj = { id: taskId, meeting_id: meeting.id, text: task.text, assignee: task.assignee, assigner: currentUser.email, status: 'pending', start_date: taskStartDate, end_date: null, deleted: false };
+                             const newTaskObj = { id: taskId, meeting_id: meeting.id, text: task.text, assignee: task.assignee, assigner: currentUser.email, status: 'pending', start_date: taskStartDate, end_date: null, deleted: false, last_reminded_date: getTodayISO() };
                              
                              setTasks(prev => [...prev, { ...newTaskObj, meetingId: meeting.id }]); // update local
                              
@@ -1964,7 +2136,7 @@ end $$;
                 if (!text.trim()) return;
                 const newId = `t_${Date.now()}`;
                 // Now enforcing email for assignment keys
-                const newTask = { id: newId, meeting_id: 'standalone', text: text, assignee: assigneeId || currentUser.email, assigner: currentUser.email, status: 'pending', start_date: start || getTodayISO(), end_date: end || getTodayISO(), deleted: false };
+                const newTask = { id: newId, meeting_id: 'standalone', text: text, assignee: assigneeId || currentUser.email, assigner: currentUser.email, status: 'pending', start_date: start || getTodayISO(), end_date: end || getTodayISO(), deleted: false, last_reminded_date: getTodayISO() };
                 
                 setTasks(prev => [newTask, ...prev]);
                 if (dbStatus === 'connected' && client) { 
@@ -2200,7 +2372,7 @@ end $$;
                 <div className="flex flex-col h-screen bg-gray-50 dark:bg-gray-900 transition-colors">
                     {view === 'dashboard' ? (
                         <>
-                            <AppHeader currentUser={currentUser} onLogout={handleLogout} onSync={handleSync} dbStatus={dbStatus} isSyncing={isSyncing} syncRange={syncRange} setSyncRange={setSyncRange} lastSynced={lastSynced} isDarkMode={isDarkMode} toggleDarkMode={toggleDarkMode}/>
+                            <AppHeader currentUser={currentUser} onLogout={handleLogout} onSync={handleSync} dbStatus={dbStatus} isSyncing={isSyncing} syncRange={syncRange} setSyncRange={setSyncRange} lastSynced={lastSynced} isDarkMode={isDarkMode} toggleDarkMode={toggleDarkMode} gcalSyncStatus={gcalSyncStatus} />
                             <main className="flex-1 overflow-y-auto p-6"><div className="max-w-5xl mx-auto">
                                 <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 gap-4">
                                     <div><h2 className="text-2xl font-bold text-gray-900 dark:text-gray-100">{dashboardViewMode === 'meetings' ? 'My Meetings' : (dashboardViewMode === 'tasks' ? 'My Tasks' : (dashboardViewMode === 'team' ? 'Team' : 'Reports'))}</h2><p className="text-gray-500 dark:text-gray-400 text-sm mt-1">{currentUser.name}</p></div>
@@ -2331,12 +2503,12 @@ end $$;
                     ) : (
                         view === 'meeting' && currentMeetingForView && (
                             <>
-                                <AppHeader currentUser={currentUser} onLogout={handleLogout} dbStatus={dbStatus} onBack={() => setView('dashboard')} title={currentMeetingForView.title} meeting={currentMeetingForView} isDarkMode={isDarkMode} toggleDarkMode={toggleDarkMode} />
+                                <AppHeader currentUser={currentUser} onLogout={handleLogout} dbStatus={dbStatus} onBack={() => setView('dashboard')} title={currentMeetingForView.title} meeting={currentMeetingForView} isDarkMode={isDarkMode} toggleDarkMode={toggleDarkMode} gcalSyncStatus={gcalSyncStatus} />
                                 <div className="flex-1 overflow-hidden flex flex-col">
                                     <TaskManager tasks={aggregatedMeetingTasks} meetings={meetings} attendees={allPossibleAssignees} currentUserEmail={currentUser?.email} onUpdateTask={handleUpdateTask} currentUser={currentUser} onDelete={handleDeleteTask} onUpdateText={handleUpdateText} onRestore={handleRestoreTask}
                                     onAdd={(mId, text, assignee, start, end) => { 
                                         const newId = `t_${Date.now()}_${Math.floor(Math.random() * 1000)}`; 
-                                        const newTaskObj = { id: newId, meeting_id: mId, text, assignee, assigner: currentUser.email, status: 'pending', start_date: start, end_date: end, deleted: false, done: false };
+                                        const newTaskObj = { id: newId, meeting_id: mId, text, assignee, assigner: currentUser.email, status: 'pending', start_date: start, end_date: end, deleted: false, done: false, last_reminded_date: getTodayISO() };
                                         setTasks(prev => [...prev, { ...newTaskObj, meetingId: mId }]); 
                                         
                                         if (dbStatus === 'connected' && client) { 
