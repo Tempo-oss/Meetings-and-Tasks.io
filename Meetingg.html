@@ -116,6 +116,82 @@
         const DEPARTMENTS = ['Managers', 'Leaders', 'Quality', 'Training', 'HR', 'Mentors', 'WFM', 'Eng team'];
         const ADMIN_EMAILS = ['mohamed.abdelmagid@tempo.fit', 'halim@tempo.fit', 'nancy@tempo.fit'];
 
+        const SQL_SETUP_INSTRUCTIONS = `
+-- Run these commands in your Supabase SQL Editor to fix permissions and missing columns:
+
+-- 1. Create Tables (Safe to run, will skip if they exist)
+create table if not exists meetings (
+    id text primary key,
+    title text,
+    date text,
+    time text,
+    duration text,
+    participants jsonb, 
+    doc_id text,
+    google_calendar_id text,
+    synced boolean,
+    platform text,
+    google_doc_link text,
+    video_link text
+);
+
+create table if not exists tasks (
+    id text primary key,
+    meeting_id text,
+    text text,
+    assignee text,
+    assigner text,
+    done boolean,
+    status text default 'pending',
+    obstacles text,
+    start_date date,
+    end_date date,
+    reminder_sent boolean default false,
+    last_reminded_date text,
+    deleted boolean default false
+);
+
+create table if not exists team_members (
+    email text primary key,
+    name text,
+    team text,
+    role text,
+    managed_teams text[],
+    system_role text default 'user',
+    created_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+create table if not exists pending_emails (
+    id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+    recipient_email text NOT NULL,
+    subject text NOT NULL,
+    body text NOT NULL,
+    status text DEFAULT 'pending',
+    created_at timestamp with time zone DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+-- 2. FIX MISSING COLUMNS
+alter table meetings add column if not exists video_link text;
+alter table meetings add column if not exists google_doc_link text;
+alter table tasks add column if not exists assigner text;
+alter table tasks add column if not exists last_reminded_date text;
+alter table tasks add column if not exists deleted boolean default false;
+
+-- 3. Disable RLS to allow writing
+alter table meetings disable row level security;
+alter table tasks disable row level security;
+alter table team_members disable row level security;
+alter table pending_emails disable row level security;
+
+-- 4. Safely Enable Realtime
+do $$
+begin
+  if not exists (select 1 from pg_publication_tables where pubname = 'supabase_realtime' and tablename = 'meetings') then
+    alter publication supabase_realtime add table meetings, tasks, team_members;
+  end if;
+end $$;
+`;
+
         // --- Icon Component ---
         const Icon = ({ name, className, ...props }) => {
             const icons = {
@@ -195,6 +271,7 @@
             );
         };
 
+        // --- Sub-Components ---
         const UserAvatar = ({ user, size = 'md' }) => {
             const sizeClasses = { sm: 'w-6 h-6 text-xs', md: 'w-8 h-8 text-sm', lg: 'w-10 h-10 text-base' };
             if (!user) return null;
@@ -207,7 +284,7 @@
             );
         };
 
-        const AppHeader = ({ currentUser, onLogout, dbStatus, onBack, title, meeting, isDarkMode, toggleDarkMode, gcalSyncStatus }) => (
+        const AppHeader = ({ currentUser, onLogout, onSync, dbStatus, onBack, title, isSyncing, syncRange, setSyncRange, meeting, lastSynced, isDarkMode, toggleDarkMode, gcalSyncStatus }) => (
             <header className="bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800 h-16 flex items-center justify-between px-4 sm:px-6 shrink-0 sticky top-0 z-20 text-gray-900 dark:text-white transition-colors duration-200">
                 <div className="flex items-center space-x-4 flex-1 min-w-0">
                     {onBack ? (
@@ -241,6 +318,7 @@
                         <Icon name={isDarkMode ? 'Sun' : 'Moon'} className="w-5 h-5" />
                     </button>
 
+                    {/* Join Meeting Button */}
                     {meeting && meeting.video_link && (
                         <a 
                             href={meeting.video_link} 
@@ -254,6 +332,25 @@
                         </a>
                     )}
 
+                    {onSync && (dbStatus === 'empty' || dbStatus === 'connected') && 
+                        <div className="flex items-center space-x-2">
+                            <div className="flex flex-col items-end mr-2">
+                                <select 
+                                    value={syncRange}
+                                    onChange={(e) => setSyncRange(e.target.value)}
+                                    className="text-xs border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 text-gray-700 dark:text-gray-300 rounded border p-1 focus:outline-none focus:ring-1 focus:ring-tempo-blue hidden sm:block mb-0.5"
+                                >
+                                    <option value="upcoming">Upcoming</option>
+                                    <option value="past_month">Past 30 Days</option>
+                                </select>
+                                {lastSynced && <span className="text-[9px] text-gray-500 hidden sm:block">Last: {lastSynced}</span>}
+                            </div>
+                            <button onClick={onSync} disabled={isSyncing} className="text-sm font-medium text-tempo-blue hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 flex items-center disabled:opacity-50" title="Click to refresh from Google Calendar">
+                                <Icon name="RefreshCw" className={`w-4 h-4 mr-1 ${isSyncing ? 'animate-spin' : ''}`}/> 
+                                <span className="hidden sm:inline">{isSyncing ? 'Syncing...' : 'Sync'}</span>
+                            </button>
+                        </div>
+                    }
                     <div className="h-6 w-px bg-gray-200 dark:bg-gray-700 mx-1 hidden sm:block"></div>
                     <div className="flex items-center space-x-2">
                         <UserAvatar user={currentUser} size="sm" />
@@ -274,7 +371,7 @@
             
             const handleClick = (e) => {
                 if (meeting.google_doc_link && onAutoImport) {
-                    onAutoImport(meeting, true);
+                    onAutoImport(meeting, true); // true = silent
                 }
                 onClick();
             };
@@ -351,10 +448,12 @@
 
             return (
                 <div className={`bg-white dark:bg-gray-800 border ${isTrash ? 'border-gray-200 dark:border-gray-700 opacity-75' : (isCompleted ? 'border-tempo-blue/20 dark:border-tempo-blue/30 bg-tempo-blue/5 dark:bg-tempo-blue/10' : 'border-gray-200 dark:border-gray-700')} rounded-lg transition-all duration-200 hover:shadow-md mb-3`}>
+                    {/* Collapsed View / Header */}
                     <div 
                         className="flex items-start p-3 cursor-pointer group" 
                         onClick={() => setIsExpanded(!isExpanded)}
                     >
+                        {/* Checkbox Icon */}
                         <div 
                             className={`mt-0.5 mr-3 flex-shrink-0 transition-colors ${isTrash ? 'text-gray-300 dark:text-gray-600' : (isCompleted ? 'text-tempo-blue hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300' : 'text-gray-300 dark:text-gray-500 hover:text-tempo-blue dark:hover:text-tempo-blue')}`}
                             onClick={handleIconClick}
@@ -367,6 +466,7 @@
                             )}
                         </div>
 
+                        {/* Task Title & Summary */}
                         <div className="flex-1 min-w-0">
                             {isEditingText ? (
                                 <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
@@ -395,6 +495,7 @@
                                 </div>
                             )}
                             
+                            {/* Summary Metadata (Visible when collapsed) */}
                             {!isExpanded && (
                                 <div className="flex items-center mt-1.5 space-x-3 text-xs text-gray-400 dark:text-gray-500">
                                     {task.end_date && (
@@ -425,6 +526,7 @@
                             )}
                         </div>
 
+                        {/* Actions */}
                         {isTrash ? (
                             <button 
                                 onClick={(e) => { e.stopPropagation(); onRestore(task.id); }}
@@ -445,16 +547,20 @@
                             )
                         )}
 
+                        {/* Expand Chevron */}
                         <div className={`ml-2 text-gray-300 dark:text-gray-600 transition-transform duration-200 ${isExpanded ? 'rotate-90' : '-rotate-90'}`}>
                             <Icon name="ChevronLeft" className="w-4 h-4" />
                         </div>
                     </div>
 
+                    {/* Expanded Details */}
                     {isExpanded && (
                         <div className="px-4 pb-4 pt-0 pl-11">
                             <div className="pt-3 border-t border-gray-100/60 dark:border-gray-700/60 flex flex-col gap-3 animate-in fade-in zoom-in-95 duration-200">
                                 
+                                {/* Meta Controls Row */}
                                 <div className="flex flex-wrap gap-4 text-xs">
+                                    {/* Status Select */}
                                     {!isTrash && (
                                         <div className="flex flex-col gap-1">
                                             <label className="font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider text-[10px]">Status</label>
@@ -470,6 +576,7 @@
                                         </div>
                                     )}
 
+                                    {/* Due Date */}
                                     <div className="flex flex-col gap-1">
                                         <label className="font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider text-[10px]">Due Date</label>
                                         <input 
@@ -482,6 +589,7 @@
                                         />
                                     </div>
 
+                                    {/* Assignee Display */}
                                     <div className="flex flex-col gap-1">
                                         <label className="font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider text-[10px]">Assignee</label>
                                         <div className="flex items-center h-[29px] text-gray-700 dark:text-gray-300">
@@ -489,6 +597,7 @@
                                         </div>
                                     </div>
 
+                                    {/* Source */}
                                     {meetingTitle && (
                                         <div className="flex flex-col gap-1 max-w-[150px]">
                                             <label className="font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider text-[10px]">Source</label>
@@ -499,6 +608,7 @@
                                     )}
                                 </div>
 
+                                {/* Obstacles / Notes */}
                                 <div className="mt-1">
                                     <label className="flex items-center text-[10px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-1.5">
                                         <Icon name="FileText" className="w-3 h-3 mr-1" />
@@ -529,6 +639,7 @@
             const [chartEndDate, setChartEndDate] = useState('');
             const [reportGenerated, setReportGenerated] = useState(false);
             
+            // EXCLUDE DELETED TASKS FROM REPORTS
             const activeTasks = useMemo(() => tasks.filter(t => !t.deleted), [tasks]);
 
             const uniqueOwners = useMemo(() => {
@@ -565,9 +676,9 @@
                  
                  return Object.values(stats).sort((a,b) => b.total - a.total);
             }, [activeTasks, attendees, chartStartDate, chartEndDate]);
-            
             const maxChartVal = Math.max(...chartData.map(d => d.total), 1);
 
+            // New Flat Report Data mapped to a Table
             const flatReportData = useMemo(() => {
                 const data = [];
                 const getAssigneeEmail = (idOrEmail) => {
@@ -633,6 +744,7 @@
 
             return (
                 <div className="space-y-6">
+                    {/* STATS & CHART SECTION */}
                     <div className="bg-white dark:bg-gray-800 p-6 rounded-xl border border-gray-200 dark:border-gray-700 transition-colors">
                         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 gap-4">
                             <div>
@@ -659,21 +771,25 @@
                              ) : (
                                  chartData.map((d, i) => (
                                      <div key={i} className="flex flex-col items-center min-w-[50px] flex-1 group relative h-full justify-end">
+                                          {/* Tooltip */}
                                           <div className="absolute -top-12 left-1/2 -translate-x-1/2 bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-900 text-[10px] py-1 px-2 rounded opacity-0 group-hover:opacity-100 transition-opacity z-10 whitespace-nowrap pointer-events-none shadow-md">
                                               {d.name}<br/>
                                               Done: {d.completed} | Pending: {d.pending}
                                           </div>
                                           
+                                          {/* Bar Container */}
                                           <div 
                                               className="w-full max-w-[40px] flex flex-col-reverse rounded-t-md overflow-hidden bg-gray-100 dark:bg-gray-700 relative shadow-sm"
-                                              style={{ height: `${Math.max((d.total / maxChartVal) * 100, 5)}%` }} 
+                                              style={{ height: `${Math.max((d.total / maxChartVal) * 100, 5)}%` }} // Ensure min height for visibility
                                           >
+                                              {/* Completed Segment (Blue) */}
                                               <div 
                                                   style={{ height: `${(d.completed / d.total) * 100}%` }} 
                                                   className="bg-tempo-blue w-full transition-all duration-500 relative flex items-center justify-center overflow-hidden"
                                               >
                                                   {d.completed > 0 && <span className="text-[10px] font-bold text-white shadow-sm">{d.completed}</span>}
                                               </div>
+                                              {/* Pending Segment (Yellow) */}
                                               <div 
                                                   style={{ height: `${(d.pending / d.total) * 100}%` }} 
                                                   className="bg-tempo-yellow w-full transition-all duration-500 relative flex items-center justify-center overflow-hidden"
@@ -688,13 +804,15 @@
                              )}
                         </div>
                         
+                        {/* Legend */}
                         <div className="flex justify-center gap-6 mt-2 border-t border-gray-100 dark:border-gray-700 pt-4">
                             <div className="flex items-center text-xs text-gray-600 dark:text-gray-400"><div className="w-3 h-3 bg-tempo-yellow rounded-sm mr-2"></div>Pending</div>
                             <div className="flex items-center text-xs text-gray-600 dark:text-gray-400"><div className="w-3 h-3 bg-tempo-blue rounded-sm mr-2"></div>Completed</div>
                         </div>
                     </div>
 
-                    <div className="bg-white dark:bg-gray-800 p-4 rounded-xl border border-gray-200 dark:border-gray-700 flex flex-wrap gap-4 items-end shadow-sm transition-colors">
+                    {/* Filters and List... */}
+                      <div className="bg-white dark:bg-gray-800 p-4 rounded-xl border border-gray-200 dark:border-gray-700 flex flex-wrap gap-4 items-end shadow-sm transition-colors">
                         <div className="flex flex-col gap-1 w-full sm:w-auto flex-1 min-w-[150px]">
                             <label className="text-[10px] font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider">Owner</label>
                             <select value={filterOwner} onChange={(e) => setFilterOwner(e.target.value)} className="text-sm border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white rounded-md shadow-sm border p-2 w-full focus:ring-2 focus:ring-tempo-blue outline-none">
@@ -722,6 +840,7 @@
                         </button>
                     </div>
 
+                    {/* Report Table List */}
                     {reportGenerated && (
                         <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden shadow-sm animate-in fade-in slide-in-from-bottom-4 duration-500">
                             <div className="p-4 bg-gray-50 dark:bg-gray-900/50 border-b border-gray-200 dark:border-gray-700 flex justify-between items-center">
@@ -822,6 +941,7 @@
                         </form>
                     </div>
 
+                    {/* Collapsible Unassigned List */}
                     {displayUnassigned.length > 0 && (
                         <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden shadow-sm transition-colors">
                             <button 
@@ -1016,6 +1136,7 @@
                 <div className="h-full flex items-center justify-center bg-tempo-ice dark:bg-gray-900 p-4 transition-colors duration-200">
                     <div className="bg-white dark:bg-gray-800 p-10 rounded-3xl shadow-2xl max-w-md w-full text-center border border-transparent dark:border-gray-700">
                         
+                        {/* Decorative Trio of Accents mirroring the image's weights */}
                         <div className="flex justify-center gap-3 mb-6">
                             <div className="w-8 h-8 rounded-full bg-tempo-yellow shadow-inner"></div>
                             <div className="w-8 h-8 rounded-full bg-tempo-red shadow-inner"></div>
@@ -1025,74 +1146,21 @@
                         <h1 className="text-3xl font-bold tracking-[0.2em] text-tempo-logo dark:text-white mb-2 select-none">TEMPO</h1>
                         <p className="text-gray-500 dark:text-gray-400 mb-8 font-medium">Workspace Collaboration</p>
                         
-                        <button onClick={onLogin} className="w-full flex items-center justify-center space-x-3 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600 text-gray-700 dark:text-white font-medium py-3 px-4 rounded-full transition-colors mb-6 shadow-sm">
-                            <Icon name="Google" className="w-5 h-5" />
-                            <span>Sign in with Google</span>
-                        </button>
+                        <button onClick={onLogin} className="w-full flex items-center justify-center space-x-3 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600 text-gray-700 dark:text-white font-medium py-3 px-4 rounded-full transition-colors mb-6 shadow-sm"><Icon name="Google" className="w-5 h-5" /><span>Sign in with Google</span></button>
                         
-                        <div className="relative my-6">
-                            <div className="absolute inset-0 flex items-center">
-                                <div className="w-full border-t border-gray-200 dark:border-gray-700"></div>
-                            </div>
-                            <div className="relative flex justify-center text-sm">
-                                <span className="px-3 bg-white dark:bg-gray-800 text-gray-500 dark:text-gray-400">Or email</span>
-                            </div>
-                        </div>
+                        <div className="relative my-6"><div className="absolute inset-0 flex items-center"><div className="w-full border-t border-gray-200 dark:border-gray-700"></div></div><div className="relative flex justify-center text-sm"><span className="px-3 bg-white dark:bg-gray-800 text-gray-500 dark:text-gray-400">Or email</span></div></div>
                         
                         <div className="flex justify-center space-x-6 mb-6 text-sm">
                             <button onClick={() => setAuthMethod('password')} className={`pb-1 border-b-2 transition-colors ${authMethod === 'password' ? 'border-tempo-blue text-tempo-blue font-bold' : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 font-medium'}`}>Password</button>
                             <button onClick={() => setAuthMethod('magic')} className={`pb-1 border-b-2 transition-colors ${authMethod === 'magic' ? 'border-tempo-blue text-tempo-blue font-bold' : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 font-medium'}`}>Magic Link</button>
                         </div>
 
-                        {authMethod === 'magic' ? ( 
-                            !magicSent ? (
-                                <form onSubmit={handleMagicLink} className="space-y-4 text-left">
-                                    <div>
-                                        <label className="text-xs font-bold text-gray-700 dark:text-gray-300 uppercase tracking-wider">Email Address</label>
-                                        <input type="email" placeholder="name@example.com" className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white rounded-lg focus:ring-2 focus:ring-tempo-blue focus:outline-none mt-1" value={email} onChange={(e) => setEmail(e.target.value)} required/>
-                                    </div>
-                                    <button type="submit" className="tempo-btn w-full py-2.5 px-4 flex items-center justify-center space-x-2 font-medium">
-                                        <Icon name="Mail" className="w-4 h-4" />
-                                        <span>Send Magic Link</span>
-                                    </button>
-                                </form>
-                            ) : (
-                                <div className="mb-6 bg-tempo-blue/10 dark:bg-tempo-blue/20 text-tempo-blue dark:text-blue-400 p-4 rounded-lg text-sm border border-tempo-blue/20 dark:border-blue-800 font-medium">
-                                    Check your email for the login link!
-                                </div>
-                            ) 
-                        ) : (
-                            <form onSubmit={handlePasswordAction} className="space-y-4 text-left">
-                                <div>
-                                    <label className="text-xs font-bold text-gray-700 dark:text-gray-300 uppercase tracking-wider">Email Address</label>
-                                    <input type="email" placeholder="name@example.com" className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white rounded-lg focus:ring-2 focus:ring-tempo-blue focus:outline-none mt-1" value={email} onChange={(e) => setEmail(e.target.value)} required/>
-                                </div>
-                                {!isForgot && (
-                                    <div>
-                                        <label className="text-xs font-bold text-gray-700 dark:text-gray-300 uppercase tracking-wider">Password</label>
-                                        <input type="password" placeholder="••••••••" className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white rounded-lg focus:ring-2 focus:ring-tempo-blue focus:outline-none mt-1" value={password} onChange={(e) => setPassword(e.target.value)} required/>
-                                    </div>
-                                )}
-                                <button type="submit" className="tempo-btn w-full py-2.5 px-4 flex items-center justify-center space-x-2 font-medium">
-                                    {isForgot ? 'Send Reset Link' : (isSignUp ? 'Create Account' : 'Sign In')}
-                                </button>
-                                <div className="flex justify-between text-xs mt-4 font-medium">
-                                    {!isForgot && (
-                                        <button type="button" onClick={() => setIsSignUp(!isSignUp)} className="text-tempo-blue hover:underline">
-                                            {isSignUp ? 'Already have an account? Sign In' : 'Need an account? Sign Up'}
-                                        </button>
-                                    )}
-                                    <button type="button" onClick={() => setIsForgot(!isForgot)} className="text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200">
-                                        {isForgot ? 'Back to Login' : 'Forgot Password?'}
-                                    </button>
-                                </div>
-                            </form>
+                        {authMethod === 'magic' ? ( !magicSent ? (
+                            <form onSubmit={handleMagicLink} className="space-y-4 text-left"><div><label className="text-xs font-bold text-gray-700 dark:text-gray-300 uppercase tracking-wider">Email Address</label><input type="email" placeholder="name@example.com" className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white rounded-lg focus:ring-2 focus:ring-tempo-blue focus:outline-none mt-1" value={email} onChange={(e) => setEmail(e.target.value)} required/></div><button type="submit" className="tempo-btn w-full py-2.5 px-4 flex items-center justify-center space-x-2 font-medium"><Icon name="Mail" className="w-4 h-4" /><span>Send Magic Link</span></button></form>
+                        ) : (<div className="mb-6 bg-tempo-blue/10 dark:bg-tempo-blue/20 text-tempo-blue dark:text-blue-400 p-4 rounded-lg text-sm border border-tempo-blue/20 dark:border-blue-800 font-medium">Check your email for the login link!</div>) ) : (
+                            <form onSubmit={handlePasswordAction} className="space-y-4 text-left"><div><label className="text-xs font-bold text-gray-700 dark:text-gray-300 uppercase tracking-wider">Email Address</label><input type="email" placeholder="name@example.com" className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white rounded-lg focus:ring-2 focus:ring-tempo-blue focus:outline-none mt-1" value={email} onChange={(e) => setEmail(e.target.value)} required/></div>{!isForgot && (<div><label className="text-xs font-bold text-gray-700 dark:text-gray-300 uppercase tracking-wider">Password</label><input type="password" placeholder="••••••••" className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white rounded-lg focus:ring-2 focus:ring-tempo-blue focus:outline-none mt-1" value={password} onChange={(e) => setPassword(e.target.value)} required/></div>)}<button type="submit" className="tempo-btn w-full py-2.5 px-4 flex items-center justify-center space-x-2 font-medium">{isForgot ? 'Send Reset Link' : (isSignUp ? 'Create Account' : 'Sign In')}</button><div className="flex justify-between text-xs mt-4 font-medium">{!isForgot && (<button type="button" onClick={() => setIsSignUp(!isSignUp)} className="text-tempo-blue hover:underline">{isSignUp ? 'Already have an account? Sign In' : 'Need an account? Sign Up'}</button>)}<button type="button" onClick={() => setIsForgot(!isForgot)} className="text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200">{isForgot ? 'Back to Login' : 'Forgot Password?'}</button></div></form>
                         )}
-                        <div className="mt-8 p-4 bg-gray-50 dark:bg-gray-700/50 rounded-xl text-left">
-                            <h4 className="text-xs font-bold text-gray-700 dark:text-gray-300 mb-1 flex items-center"><Icon name="AlertCircle" className="w-3 h-3 mr-1" />Trouble Signing In?</h4>
-                            <p className="text-xs text-gray-500 dark:text-gray-400 mb-2"><strong>Google Error?</strong> Verify your Redirect URL in Google Cloud matches exactly:</p>
-                            <code className="block bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-300 p-2 rounded shadow-inner text-[10px] break-all font-mono mb-1">{window.location.href}</code>
-                        </div>
+                        <div className="mt-8 p-4 bg-gray-50 dark:bg-gray-700/50 rounded-xl text-left"><h4 className="text-xs font-bold text-gray-700 dark:text-gray-300 mb-1 flex items-center"><Icon name="AlertCircle" className="w-3 h-3 mr-1" />Trouble Signing In?</h4><p className="text-xs text-gray-500 dark:text-gray-400 mb-2"><strong>Google Error?</strong> Verify your Redirect URL in Google Cloud matches exactly:</p><code className="block bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-300 p-2 rounded shadow-inner text-[10px] break-all font-mono mb-1">{window.location.href}</code></div>
                     </div>
                 </div>
             );
@@ -1102,19 +1170,8 @@
             const [newPassword, setNewPassword] = useState('');
             const [message, setMessage] = useState('');
             const handleReset = (e) => { e.preventDefault(); onReset(newPassword); setMessage('Password updated! Redirecting...'); };
-            
             return (
-                <div className="h-full flex items-center justify-center bg-tempo-ice dark:bg-gray-900 p-4 transition-colors duration-200">
-                    <div className="bg-white dark:bg-gray-800 p-10 rounded-3xl shadow-2xl max-w-md w-full text-center border border-transparent dark:border-gray-700">
-                        <h1 className="text-3xl font-bold tracking-[0.2em] text-tempo-logo dark:text-white mb-2">TEMPO</h1>
-                        <p className="text-gray-500 dark:text-gray-400 mb-8 font-medium">Set your new password below.</p>
-                        <form onSubmit={handleReset} className="space-y-4">
-                            <input type="password" placeholder="New Password" className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white rounded-lg focus:ring-2 focus:ring-tempo-blue focus:outline-none" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} required minLength="6"/>
-                            <button type="submit" className="tempo-btn w-full py-2.5 px-4 font-medium">Update Password</button>
-                        </form>
-                        {message && <p className="mt-4 text-green-600 dark:text-green-400 text-sm font-medium">{message}</p>}
-                    </div>
-                </div>
+                <div className="h-full flex items-center justify-center bg-tempo-ice dark:bg-gray-900 p-4 transition-colors duration-200"><div className="bg-white dark:bg-gray-800 p-10 rounded-3xl shadow-2xl max-w-md w-full text-center border border-transparent dark:border-gray-700"><h1 className="text-3xl font-bold tracking-[0.2em] text-tempo-logo dark:text-white mb-2">TEMPO</h1><p className="text-gray-500 dark:text-gray-400 mb-8 font-medium">Set your new password below.</p><form onSubmit={handleReset} className="space-y-4"><input type="password" placeholder="New Password" className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white rounded-lg focus:ring-2 focus:ring-tempo-blue focus:outline-none" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} required minLength="6"/><button type="submit" className="tempo-btn w-full py-2.5 px-4 font-medium">Update Password</button></form>{message && <p className="mt-4 text-green-600 dark:text-green-400 text-sm font-medium">{message}</p>}</div></div>
             );
         };
 
@@ -1123,17 +1180,19 @@
             const [currentUser, setCurrentUser] = useState(null);
             const [view, setView] = useState('dashboard');
             const [dashboardViewMode, setDashboardViewMode] = useState('meetings'); 
-            const [selectedDate, setSelectedDate] = useState(''); // Default to blank to show ALL upcoming
+            const [selectedDate, setSelectedDate] = useState(getTodayISO());
             const [selectedMeetingId, setSelectedMeetingId] = useState(null);
-            const [taskFilter, setTaskFilter] = useState('pending'); 
+            const [syncRange, setSyncRange] = useState('upcoming'); 
+            const [taskFilter, setTaskFilter] = useState('pending'); // Default to pending 
             const [taskScope, setTaskScope] = useState('me'); 
-            const [meetingScope, setMeetingScope] = useState('me'); 
+            const [meetingScope, setMeetingScope] = useState('me'); // Added Meeting Scope
             const [showQuickAdd, setShowQuickAdd] = useState(false); 
-            const [showPast, setShowPast] = useState(false); 
+            const [showPast, setShowPast] = useState(false); // New state for toggling past meetings
+            const [lastSynced, setLastSynced] = useState(null);
             
-            const [gcalSyncStatus, setGcalSyncStatus] = useState('idle'); 
+            const [gcalSyncStatus, setGcalSyncStatus] = useState('idle'); // 'idle', 'syncing', 'live', 'stale'
             const meetingsRef = useRef([]);
-            const remindedTaskIds = useRef(new Set()); // Lock for daily reminders
+            const lastGcalSyncRef = useRef(null);
 
             useEffect(() => {
                 meetingsRef.current = meetings;
@@ -1169,6 +1228,7 @@
             const [dbStatus, setDbStatus] = useState('connecting'); 
             const [errorMsg, setErrorMsg] = useState('');
             const [loading, setLoading] = useState(true);
+            const [isSyncing, setIsSyncing] = useState(false);
             const [supabaseClient, setSupabaseClient] = useState(null);
 
             // --- NOTIFICATION BUFFERS ---
@@ -1189,13 +1249,17 @@
             }, []);
 
             // --- UNIFIED ASSIGNEE MAPPING ---
+            // This safely maps the legacy user IDs (UUID) to the team_members email
+            // guaranteeing 1 clean object per user, regardless of how they are assigned.
             const allPossibleAssignees = useMemo(() => {
                 const uniqueByEmail = new Map();
                 
+                // 1. Team Members (Base truth)
                 teamMembers.forEach(tm => {
                     if (tm.email) uniqueByEmail.set(tm.email.toLowerCase(), { ...tm });
                 });
 
+                // 2. Colleagues (Found in meetings)
                 colleagues.forEach(c => {
                     if (c.email) {
                         const key = c.email.toLowerCase();
@@ -1203,11 +1267,12 @@
                     }
                 });
 
+                // 3. Current User (Crucial: Merges Auth UUID into the email object so legacy tasks resolve properly)
                 if (currentUser && currentUser.email) {
                     const key = currentUser.email.toLowerCase();
                     if (uniqueByEmail.has(key)) {
                         const existing = uniqueByEmail.get(key);
-                        existing.id = currentUser.id; 
+                        existing.id = currentUser.id; // Store UUID for reverse-lookup compatibility
                         existing.name = currentUser.name || existing.name;
                         uniqueByEmail.set(key, existing);
                     } else {
@@ -1226,6 +1291,7 @@
                 }
             }, []);
 
+            // Deep Linking for Meetings
             useEffect(() => {
                 const params = new URLSearchParams(window.location.search);
                 const mId = params.get('meetingId');
@@ -1234,18 +1300,21 @@
                     if (target) {
                         setSelectedMeetingId(mId);
                         setView('meeting');
+                        // Clean URL without reload
                         window.history.replaceState({}, document.title, window.location.pathname);
                     }
                 }
             }, [meetings]);
 
+            // Helper to ensure we use the state client
             const client = supabaseClient; 
 
+            // -- DEBOUNCED FETCH FOR REALTIME SPAM PREVENTION --
             const triggerBackgroundFetch = useCallback(() => {
                 if (fetchTimeoutRef.current) clearTimeout(fetchTimeoutRef.current);
                 fetchTimeoutRef.current = setTimeout(() => {
                     fetchData(supabaseClient, true);
-                }, 1000); 
+                }, 2000); // 2 second debounce for realtime event bursts
             }, [supabaseClient]);
 
             useEffect(() => {
@@ -1275,6 +1344,7 @@
                         const role = getSystemRole(session.user.email);
                         setCurrentUser({ id: session.user.id, name: session.user.user_metadata.full_name || session.user.email, email: session.user.email, system_role: role, avatar: (session.user.user_metadata.full_name || 'U').substring(0, 2).toUpperCase(), color: 'bg-indigo-600' });
                         
+                        // Prevent fetching loop by ensuring it's an actionable startup/auth event
                         if (event === 'INITIAL_SESSION' || event === 'SIGNED_IN') {
                             fetchData(supabaseClient);
                         }
@@ -1285,6 +1355,7 @@
                 return () => subscription.unsubscribe();
             }, [supabaseClient]);
 
+            // -- EMAIL QUEUE HELPER --
             const queueEmail = async (to, subject, body) => {
                 if (!client || dbStatus !== 'connected' || !to) return;
                 await client.from('pending_emails').insert({
@@ -1295,16 +1366,20 @@
                 });
             };
 
+            // --- BATCH NOTIFICATION LOGIC ---
+            
+            // 1. Flush Assignments (Group by Assignee -> Meeting)
             const flushAssignmentNotifications = useCallback(async () => {
                 if (assignmentBuffer.current.length === 0) return;
                 const tasksToProcess = [...assignmentBuffer.current];
-                assignmentBuffer.current = []; 
+                assignmentBuffer.current = []; // Clear buffer
 
+                // Group by Assignee Email
                 const tasksByAssignee = {};
                 for (const item of tasksToProcess) {
                     const { task, meetingTitle, meetingId } = item;
                     const assigneeId = task.assignee;
-                    if (!assigneeId || assigneeId === currentUser?.id || assigneeId === currentUser?.email) continue; 
+                    if (!assigneeId || assigneeId === currentUser?.id || assigneeId === currentUser?.email) continue; // Skip self
 
                     const user = allPossibleAssignees.find(u => u.email === assigneeId || u.id === assigneeId);
                     const email = user ? user.email : (assigneeId.includes('@') ? assigneeId : null);
@@ -1315,10 +1390,12 @@
                     }
                 }
 
+                // Send Emails
                 for (const [email, tasks] of Object.entries(tasksByAssignee)) {
                     const name = tasks[0].assigneeName;
                     const count = tasks.length;
                     
+                    // Group by meeting inside the email if needed
                     const meetingsMap = {};
                     tasks.forEach(t => {
                         const mId = t.meetingId || 'standalone';
@@ -1333,6 +1410,7 @@
                         data.tasks.forEach(t => {
                             body += `[ ] ${t.text} (Due: ${t.end_date || 'No Date'})\n`;
                         });
+                        // Add Link
                         const link = `${window.location.origin}${window.location.pathname}?meetingId=${mId}`;
                         body += `View Meeting: ${link}\n\n`;
                     });
@@ -1347,11 +1425,13 @@
                 }
             }, [client, allPossibleAssignees, currentUser]);
 
+            // 2. Flush Completions (Group by Manager AND Assigner)
             const flushCompletionNotifications = useCallback(async () => {
                 if (completionBuffer.current.length === 0) return;
                 const tasksToProcess = [...completionBuffer.current];
                 completionBuffer.current = [];
 
+                // Find manager for each task assignee and group
                 const notificationsByEmail = {};
 
                 for (const item of tasksToProcess) {
@@ -1360,6 +1440,7 @@
                     const assignerId = task.assigner;
                     const assigneeUser = allPossibleAssignees.find(m => m.email === assigneeId || m.id === assigneeId);
 
+                    // 1. Notify Manager
                     if (assigneeUser && assigneeUser.team) {
                         const manager = allPossibleAssignees.find(m => (m.team === assigneeUser.team && m.role === 'Owner') || (m.managed_teams && m.managed_teams.includes(assigneeUser.team)));
                         if (manager && manager.email) {
@@ -1368,11 +1449,12 @@
                         }
                     }
 
+                    // 2. Notify Assigner (if different from manager and not self)
                     if (assignerId && assignerId !== assigneeId) {
                         const assignerUser = allPossibleAssignees.find(m => m.email === assignerId || m.id === assignerId);
                         const assignerEmail = assignerUser ? assignerUser.email : (assignerId.includes('@') ? assignerId : null);
                         
-                        if (assignerEmail && !notificationsByEmail[assignerEmail]) { 
+                        if (assignerEmail && !notificationsByEmail[assignerEmail]) { // Don't duplicate if assigner IS manager
                              if (!notificationsByEmail[assignerEmail]) notificationsByEmail[assignerEmail] = { name: assignerUser?.name || 'Assigner', items: [], type: 'assigner' };
                              notificationsByEmail[assignerEmail].items.push({ task, doer: assigneeUser?.name || 'Assignee', meetingTitle });
                         } else if (assignerEmail && notificationsByEmail[assignerEmail]) {
@@ -1382,6 +1464,7 @@
                     }
                 }
 
+                // Send Emails
                 for (const [email, data] of Object.entries(notificationsByEmail)) {
                     const count = data.items.length;
                     let body = `Hi ${data.name},\n\n${count} action item(s) have been marked complete:\n\n`;
@@ -1397,178 +1480,174 @@
                 }
             }, [client, allPossibleAssignees]);
 
+
+            // -- TRIGGERS --
+
+            // Trigger for New Tasks (Buffered)
             const scheduleAssignmentNotification = (task, meetingTitle, meetingId) => {
                 assignmentBuffer.current.push({ task, meetingTitle, meetingId });
                 if (assignmentTimeout.current) clearTimeout(assignmentTimeout.current);
+                // Wait 10 seconds to collect batch
                 assignmentTimeout.current = setTimeout(flushAssignmentNotifications, 10000); 
             };
 
+            // Trigger for Completed Tasks (Buffered)
             const scheduleCompletionNotification = (task, meetingTitle) => {
                 completionBuffer.current.push({ task, meetingTitle });
                 if (completionTimeout.current) clearTimeout(completionTimeout.current);
+                // Wait 60 seconds to collect multiple check-offs
                 completionTimeout.current = setTimeout(flushCompletionNotifications, 60000);
             };
 
-            // Autonomous Sync Engine
-            const performContinuousSync = useCallback(async () => {
+            // --- REAL-TIME GOOGLE CALENDAR SYNC (INCREMENTAL POLLING) ---
+            const performIncrementalSync = useCallback(async () => {
                 if (!session?.provider_token || !client) return;
                 setGcalSyncStatus('syncing');
                 try {
-                    const timeMinDate = new Date();
-                    timeMinDate.setDate(timeMinDate.getDate() - 14);
-                    timeMinDate.setHours(0,0,0,0);
-                    const boundedTimeMinIso = timeMinDate.toISOString();
-                    
-                    const timeMaxDate = new Date();
-                    timeMaxDate.setDate(timeMaxDate.getDate() + 90);
-                    timeMaxDate.setHours(23,59,59,999);
-                    const boundedTimeMaxIso = timeMaxDate.toISOString();
-                    
+                    // Default to 30 days ago for first auto-sync if no deep sync happened recently
+                    const timeMinIso = lastGcalSyncRef.current || new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
                     const cacheBuster = new Date().getTime();
                     
-                    let pageToken = null;
+                    const resp = await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events?updatedMin=${timeMinIso}&singleEvents=true&maxResults=2500&_${cacheBuster}`, {
+                        headers: { 
+                            Authorization: `Bearer ${session.provider_token}`,
+                            'Cache-Control': 'no-cache, no-store, must-revalidate'
+                        }
+                    });
+                    
+                    if (resp.status === 401) {
+                        setGcalSyncStatus('stale');
+                        if (lastGcalSyncRef.current) showToast("Google Sync Paused: Session expired. Please log out and sign in again.");
+                        return; 
+                    }
+                    if (!resp.ok) throw new Error("Google Sync Failed");
+                    
+                    const data = await resp.json();
                     let changesDetected = false;
                     const meetingBatch = [];
                     const taskBatch = [];
-                    const deletedMeetingIds = new Set();
                     
-                    do {
-                        const pageParam = pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : '';
-                        const url = `https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${encodeURIComponent(boundedTimeMinIso)}&timeMax=${encodeURIComponent(boundedTimeMaxIso)}&singleEvents=true&showDeleted=true&maxResults=2500&_${cacheBuster}${pageParam}`;
-
-                        const resp = await fetch(url, {
-                            headers: { 
-                                Authorization: `Bearer ${session.provider_token}`,
-                                'Cache-Control': 'no-cache, no-store, must-revalidate'
+                    for (const event of data.items) {
+                        // Handle Deleted / Cancelled events
+                        if (event.status === 'cancelled') {
+                            const existing = meetingsRef.current.find(m => m.id === event.id);
+                            if (existing) {
+                                showToast(`Event Cancelled: "${existing.title}" was removed from Google Calendar.`);
+                                await client.from('meetings').delete().eq('id', event.id);
+                                changesDetected = true;
                             }
+                            continue;
+                        }
+                        
+                        // Parse updated dates
+                        let dateStr, timeStr;
+                        if (event.start.date) {
+                            dateStr = event.start.date;
+                            timeStr = 'All Day';
+                        } else {
+                            const start = new Date(event.start.dateTime);
+                            const offset = start.getTimezoneOffset() * 60000;
+                            const localDate = new Date(start.getTime() - offset);
+                            dateStr = localDate.toISOString().split('T')[0];
+                            timeStr = start.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                        }
+                        
+                        // Detect and Log Specific Changes
+                        const existingMtg = meetingsRef.current.find(m => m.id === event.id);
+                        if (existingMtg) {
+                            if (existingMtg.date !== dateStr || existingMtg.time !== timeStr) {
+                                showToast(`Event Rescheduled: "${event.summary || 'Meeting'}" moved to ${dateStr} at ${timeStr}`);
+                                changesDetected = true;
+                            }
+                        } else if (lastGcalSyncRef.current !== null) {
+                             // Only notify of "New Events" if this isn't the very first blind load
+                             showToast(`New Event: "${event.summary || 'Meeting'}" added to your calendar.`);
+                             changesDetected = true;
+                        }
+
+                        // Prepare Batch Payload
+                        const attendeesList = event.attendees ? event.attendees.map(a => ({ id: a.email, email: a.email, name: a.displayName || a.email.split('@')[0], avatar: (a.displayName || a.email).substring(0,2).toUpperCase() })) : [];
+                        const safeAttendees = attendeesList.map(a => JSON.parse(JSON.stringify(a)));
+                        const userInAttendees = safeAttendees.find(a => a.email && a.email.toLowerCase() === currentUser?.email?.toLowerCase());
+                        if (!userInAttendees && currentUser) safeAttendees.push({ id: currentUser.id, email: currentUser.email, name: currentUser.name, avatar: currentUser.avatar });
+
+                        let videoLink = event.hangoutLink;
+                        if (!videoLink && event.location && (event.location.startsWith('http') || event.location.startsWith('https'))) { videoLink = event.location; }
+
+                        meetingBatch.push({ 
+                            id: event.id, 
+                            title: event.summary || '(No Title)', 
+                            date: dateStr, 
+                            time: timeStr, 
+                            duration: '1h', 
+                            participants: safeAttendees, 
+                            doc_id: `doc_${event.id}`, 
+                            google_calendar_id: event.id, 
+                            synced: true, 
+                            platform: 'Google Calendar',
+                            video_link: videoLink 
                         });
                         
-                        if (resp.status === 401) {
-                            setGcalSyncStatus('stale');
-                            return; 
-                        }
-                        if (!resp.ok) throw new Error("Google Sync Failed");
-                        
-                        const data = await resp.json();
-                        
-                        for (const event of data.items) {
-                            const me = event.attendees?.find(a => a.self || (currentUser && a.email?.toLowerCase() === currentUser.email?.toLowerCase()));
-                            const isDeclined = me && me.responseStatus === 'declined';
-
-                            if (event.status === 'cancelled' || isDeclined) {
-                                deletedMeetingIds.add(event.id);
-                                continue;
-                            }
-                            
-                            let dateStr, timeStr;
-                            if (event.start?.date) {
-                                dateStr = event.start.date;
-                                timeStr = 'All Day';
-                            } else if (event.start?.dateTime) {
-                                const start = new Date(event.start.dateTime);
-                                const year = start.getFullYear();
-                                const month = String(start.getMonth() + 1).padStart(2, '0');
-                                const day = String(start.getDate()).padStart(2, '0');
-                                dateStr = `${year}-${month}-${day}`;
-                                timeStr = start.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-                            } else {
-                                continue;
-                            }
-                            
-                            const attendeesList = event.attendees ? event.attendees.map(a => ({ 
-                                id: a.email, email: a.email, name: a.displayName || a.email.split('@')[0], 
-                                avatar: (a.displayName || a.email).substring(0,2).toUpperCase(), 
-                                responseStatus: a.responseStatus 
-                            })) : [];
-                            const safeAttendees = JSON.parse(JSON.stringify(attendeesList));
-                            const userInAttendees = safeAttendees.find(a => a.email && a.email.toLowerCase() === currentUser?.email?.toLowerCase());
-                            if (!userInAttendees && currentUser) {
-                                safeAttendees.push({ id: currentUser.id, email: currentUser.email, name: currentUser.name, avatar: currentUser.avatar, responseStatus: 'accepted' });
-                            }
-
-                            let videoLink = event.hangoutLink;
-                            if (!videoLink && event.location && (event.location.startsWith('http') || event.location.startsWith('https'))) { videoLink = event.location; }
-
-                            meetingBatch.push({ 
-                                id: event.id, title: event.summary || '(No Title)', date: dateStr, time: timeStr, duration: '1h', 
-                                participants: safeAttendees, doc_id: `doc_${event.id}`, google_calendar_id: event.id, 
-                                synced: true, platform: 'Google Calendar', video_link: videoLink 
-                            });
-                            
-                            const description = event.description || '';
-                            const taskRegex = /(?:^|\n)(?:-? ?\[ ?\]|TODO:|Task:)\s*(.+)/gi;
-                            let match;
-                            while ((match = taskRegex.exec(description)) !== null) {
-                                const taskText = match[1].trim();
-                                if (taskText) {
-                                    const taskId = `t_${event.id}_${taskText.substring(0, 5).replace(/\s/g, '')}`;
-                                    taskBatch.push({ id: taskId, meeting_id: event.id, text: taskText, assignee: currentUser?.email, status: 'pending', deleted: false, last_reminded_date: getTodayISO() });
-                                }
+                        // Auto-extract tasks on the fly
+                        const description = event.description || '';
+                        const taskRegex = /(?:^|\n)(?:-? ?\[ ?\]|TODO:|Task:)\s*(.+)/gi;
+                        let match;
+                        while ((match = taskRegex.exec(description)) !== null) {
+                            const taskText = match[1].trim();
+                            if (taskText) {
+                                const taskId = `t_${event.id}_${taskText.substring(0, 5).replace(/\s/g, '')}`;
+                                taskBatch.push({ id: taskId, meeting_id: event.id, text: taskText, assignee: currentUser?.email, status: 'pending', deleted: false, last_reminded_date: getTodayISO() });
                             }
                         }
-                        
-                        pageToken = data.nextPageToken;
-                    } while (pageToken);
-
-                    let didModifyDb = false;
-
-                    if (deletedMeetingIds.size > 0) {
-                        const delArray = Array.from(deletedMeetingIds);
-                        for(let i = 0; i < delArray.length; i += 500) {
-                            await client.from('meetings').delete().in('id', delArray.slice(i, i + 500));
-                        }
-                        didModifyDb = true;
                     }
 
                     if (meetingBatch.length > 0) {
-                        for(let i = 0; i < meetingBatch.length; i += 500) {
-                            await client.from('meetings').upsert(meetingBatch.slice(i, i + 500));
-                        }
-                        didModifyDb = true;
+                        await client.from('meetings').upsert(meetingBatch);
+                        changesDetected = true;
                     }
                     if (taskBatch.length > 0) {
-                        for(let i = 0; i < taskBatch.length; i += 500) {
-                            await client.from('tasks').upsert(taskBatch.slice(i, i + 500), { ignoreDuplicates: true });
-                        }
-                        didModifyDb = true;
+                        await client.from('tasks').upsert(taskBatch, { ignoreDuplicates: true });
                     }
 
-                    if (didModifyDb) {
-                        triggerBackgroundFetch(); 
-                    }
+                    if (changesDetected) triggerBackgroundFetch(); // Soft refresh UI
 
+                    lastGcalSyncRef.current = new Date().toISOString();
                     setGcalSyncStatus('live');
                 } catch(e) {
-                    console.error("Continuous sync error:", e);
+                    console.error("Auto-sync error:", e);
                     setGcalSyncStatus('stale');
                 }
-            }, [session?.provider_token, client, triggerBackgroundFetch, currentUser]);
+            }, [session?.provider_token, client, showToast, triggerBackgroundFetch, currentUser]);
 
+            // Lifecycle: Start Real-Time Background Polling
             useEffect(() => {
                 if (!session?.provider_token) {
                     setGcalSyncStatus('idle');
                     return;
                 }
                 
-                performContinuousSync(); // Immediately sync on load
-                const intervalId = setInterval(performContinuousSync, 30000); // 30s background sweep
+                // 1. Immediate sync on session load
+                performIncrementalSync();
+                
+                // 2. Continuous 60s Polling
+                const intervalId = setInterval(performIncrementalSync, 60000);
                 
                 return () => clearInterval(intervalId);
-            }, [session?.provider_token, performContinuousSync]);
+            }, [session?.provider_token, performIncrementalSync]);
 
+            // DISTRIBUTED CRON: Grouped Daily Check & Reminders
             const checkAndSendReminders = async (currentTasks, allAssignees) => {
                 if (!client) return;
                 const todayStr = getTodayISO();
 
+                // 1. Identify tasks needing a daily reminder
                 const tasksNeedingReminder = currentTasks.filter(t => {
-                    return !t.done && t.status !== 'completed' && !t.deleted && t.last_reminded_date !== todayStr && !remindedTaskIds.current.has(t.id);
+                    return !t.done && t.status !== 'completed' && !t.deleted && t.last_reminded_date !== todayStr;
                 });
 
                 if (tasksNeedingReminder.length === 0) return;
 
-                // Instantly lock tasks in memory to prevent rapid duplicate emails
-                tasksNeedingReminder.forEach(t => remindedTaskIds.current.add(t.id));
-
+                // 2. Group tasks by assignee email to avoid email spam
                 const notificationsByEmail = {};
                 for (const task of tasksNeedingReminder) {
                     const assigneeId = task.assignee;
@@ -1586,6 +1665,7 @@
                     }
                 }
 
+                // 3. Queue digest emails & Update the DB
                 for (const [email, data] of Object.entries(notificationsByEmail)) {
                     const count = data.tasks.length;
                     let body = `Hi ${data.name},\n\nHere is your daily reminder for your unresolved action item(s):\n\n`;
@@ -1597,8 +1677,10 @@
                     const link = `${window.location.origin}${window.location.pathname}`;
                     body += `\nView Dashboard: ${link}\n\n- TEMPO`;
 
+                    // Push email to queue
                     await queueEmail(email, `Daily Reminder: ${count} Pending Task(s)`, body);
 
+                    // Flag as reminded today
                     const taskIds = data.tasks.map(t => t.id);
                     await client.from('tasks').update({ last_reminded_date: todayStr }).in('id', taskIds);
                 }
@@ -1611,6 +1693,7 @@
                     const { error: checkError } = await sbClient.from('meetings').select('id').limit(1);
                     if (checkError && (checkError.code === 'PGRST205' || checkError.code === '42P01')) throw { code: 'TABLE_MISSING' };
 
+                    // Fetch large range to prevent truncation of new items
                     const { data: m, error: mErr } = await sbClient.from('meetings').select('*').range(0, 9999);
                     const { data: t, error: tErr } = await sbClient.from('tasks').select('*').range(0, 9999);
                     const { data: tm, error: tmErr } = await sbClient.from('team_members').select('*');
@@ -1632,9 +1715,164 @@
                     setColleagues(colleaguesList);
                     setMeetings(parsedM); setTasks(parsedT); setDbStatus(parsedM.length ? 'connected' : 'empty');
 
+                    // Check and trigger daily recurring reminders (Distributed Cron)
                     checkAndSendReminders(parsedT, [...parsedTeam, ...colleaguesList, ...(currentUser ? [currentUser] : [])]);
                 } catch (err) {
                     if (err.code === 'TABLE_MISSING') setDbStatus('setup_required'); else { console.error("fetchData caught error:", err); setDbStatus('error'); setErrorMsg(err.message); }
+                }
+            };
+
+            const userId = session?.user?.id;
+            useEffect(() => {
+                if (!supabaseClient || !userId) return;
+
+                // WebSockets are blocked in this environment.
+                // Fallback: Poll the database every 30 seconds for external updates.
+                const intervalId = setInterval(() => {
+                    triggerBackgroundFetch();
+                }, 30000);
+
+                return () => {
+                    clearInterval(intervalId);
+                };
+            }, [supabaseClient, userId, triggerBackgroundFetch]);
+
+            const handleSync = async () => {
+                if (!session?.provider_token) { showToast("Sync Unavailable: Missing Google Access Token. Please re-login."); return; }
+                setIsSyncing(true);
+                
+                try {
+                    // Start sync from 5 YEARS AGO to ensure retrievable history as requested
+                    let timeMin = new Date();
+                    timeMin.setFullYear(timeMin.getFullYear() - 5); 
+                    timeMin.setHours(0,0,0,0);
+                    
+                    const timeMinIso = timeMin.toISOString();
+                    const dateMinStr = timeMinIso.split('T')[0]; 
+
+                    const cacheBuster = new Date().getTime();
+                    
+                    console.log(`Syncing events from ${timeMinIso}...`);
+
+                    const resp = await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events?maxResults=2500&orderBy=startTime&singleEvents=true&timeMin=${timeMinIso}&_=${cacheBuster}`, { 
+                        headers: { 
+                            Authorization: `Bearer ${session.provider_token}`,
+                            'Cache-Control': 'no-cache, no-store, must-revalidate'
+                        } 
+                    });
+                    
+                    if (resp.status === 401) {
+                        showToast("Google Authentication Expired. Please log out and sign in again.");
+                        throw new Error("Token expired");
+                    }
+
+                    if (!resp.ok) throw new Error("Failed to fetch from Google");
+                    const data = await resp.json();
+                    
+                    console.log(`Fetched ${data.items.length} events from Google.`);
+                    
+                    const gCalEventIds = new Set();
+                    const meetingBatch = [];
+                    const taskBatch = [];
+
+                    for (const event of data.items) {
+                        if (event.status === 'cancelled') continue;
+                        
+                        gCalEventIds.add(event.id);
+                        
+                        const mId = event.id;
+                        const docId = `doc_${event.id}`;
+                        
+                        // FIX: Improved Date Handling
+                        let dateStr, timeStr;
+                        
+                        if (event.start.date) {
+                            dateStr = event.start.date;
+                            timeStr = 'All Day';
+                        } else {
+                            const start = new Date(event.start.dateTime);
+                            const offset = start.getTimezoneOffset() * 60000;
+                            const localDate = new Date(start.getTime() - offset);
+                            dateStr = localDate.toISOString().split('T')[0];
+                            timeStr = start.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                        }
+                        
+                        const description = event.description || '';
+                        const taskRegex = /(?:^|\n)(?:-? ?\[ ?\]|TODO:|Task:)\s*(.+)/gi;
+                        let match;
+                        while ((match = taskRegex.exec(description)) !== null) {
+                            const taskText = match[1].trim();
+                            if (taskText) {
+                                const taskId = `t_${event.id}_${taskText.substring(0, 5).replace(/\s/g, '')}`;
+                                // Note: We now consistently use email for unified assignment mapping!
+                                taskBatch.push({ id: taskId, meeting_id: mId, text: taskText, assignee: currentUser.email, status: 'pending', deleted: false, last_reminded_date: getTodayISO() });
+                            }
+                        }
+
+                        const attendees = event.attendees ? event.attendees.map(a => ({ id: a.email, email: a.email, name: a.displayName || a.email.split('@')[0], avatar: (a.displayName || a.email).substring(0,2).toUpperCase() })) : [];
+                        const safeAttendees = attendees.map(a => JSON.parse(JSON.stringify(a)));
+                        
+                        const userInAttendees = safeAttendees.find(a => a.email && a.email.toLowerCase() === currentUser.email.toLowerCase());
+                        if (!userInAttendees) safeAttendees.push({ id: currentUser.id, email: currentUser.email, name: currentUser.name, avatar: currentUser.avatar });
+
+                        let gDocLink = null;
+                        if (event.attachments) {
+                            const gDoc = event.attachments.find(a => a.mimeType === 'application/vnd.google-apps.document');
+                            if (gDoc) gDocLink = gDoc.fileUrl;
+                        }
+
+                        let videoLink = event.hangoutLink;
+                        if (!videoLink && event.location && (event.location.startsWith('http') || event.location.startsWith('https'))) { videoLink = event.location; }
+
+                        if (client) {
+                            meetingBatch.push({ 
+                                id: mId, 
+                                title: event.summary || '(No Title)', 
+                                date: dateStr, 
+                                time: timeStr, 
+                                duration: '1h', 
+                                participants: safeAttendees, 
+                                doc_id: docId, 
+                                google_calendar_id: event.id, 
+                                synced: true, 
+                                platform: 'Google Calendar', 
+                                google_doc_link: gDocLink, 
+                                video_link: videoLink 
+                            });
+                        }
+                    }
+                    
+                    // BATCH OPS
+                    if (client) {
+                        if (meetingBatch.length > 0) {
+                            const { error } = await client.from('meetings').upsert(meetingBatch);
+                            if (error) {
+                                console.error(error);
+                                if (error.message.includes("row-level security")) showToast("Database Write Locked: Go to Supabase > SQL Editor and run the provided setup script.");
+                                else showToast("Sync Write Error: " + error.message);
+                                throw error;
+                            }
+                        }
+                        if (taskBatch.length > 0) {
+                            const { error } = await client.from('tasks').upsert(taskBatch, { ignoreDuplicates: false }); // Allow updates to flip 'deleted' back to false
+                            if (error) console.error("Task sync error (non-fatal):", error);
+                        }
+                    }
+
+                    // --- STALE DATA CLEANUP REMOVED COMPLETELY ---
+                    // This ensures no task/meeting is ever deleted automatically during sync.
+
+                    setMeetings([]); 
+                    await fetchData(client);
+                    setLastSynced(new Date().toLocaleTimeString());
+                    lastGcalSyncRef.current = new Date().toISOString();
+                    setGcalSyncStatus('live');
+                    
+                } catch (e) { 
+                    console.error("Sync failed:", e);
+                    setGcalSyncStatus('stale');
+                } finally { 
+                    setIsSyncing(false); 
                 }
             };
 
@@ -1644,12 +1882,13 @@
                 const match = meeting.google_doc_link.match(/\/d\/([a-zA-Z0-9-_]+)/);
                 if (!match) { showToast("Invalid Google Doc Link."); return; }
                 const docId = match[1];
-                setGcalSyncStatus('syncing');
+                setIsSyncing(true);
                 try {
                     const resp = await fetch(`https://docs.googleapis.com/v1/documents/${docId}`, { headers: { Authorization: `Bearer ${session.provider_token}` } });
                     if (!resp.ok) { const err = await resp.json(); throw new Error(err.error?.message || "Failed to fetch Doc"); }
                     const docData = await resp.json();
                     
+                    // --- HELPERS ---
                     const flattenDoc = (content) => {
                         let nodes = [];
                         if (!content) return nodes;
@@ -1694,8 +1933,10 @@
                         return null;
                     };
 
+                    // --- EXECUTION ---
                     const flatNodes = flattenDoc(docData.body?.content);
                     
+                    // Improved Regex for Date Headers (handles 10.15.2023, 10/15, October 15, etc.)
                     const dateRegex = /\b(?:\d{4}[-\/.]\d{1,2}[-\/.]\d{1,2}|\d{1,2}[-\/.]\d{1,2}(?:[-\/.]\d{2,4})?|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s\d{1,2}(?:st|nd|rd|th)?(?:,?\s\d{2,4})?)\b/i;
                     
                     const meetingHeaders = [];
@@ -1703,14 +1944,17 @@
                         const txt = node.elements?.map(e => e.textRun?.content || '').join('').trim();
                         if (!txt) return;
                         
+                        // Exclude lines that are clearly bullets or checkboxes from being considered date headers
                         if (node.bullet) return;
                         if (/^(\[ ?[xX]? ?\]|\( ?[xX]? ?\)|\u2610|\u2611)/i.test(txt)) return;
                         
                         const dateMatch = txt.match(dateRegex);
                         if (dateMatch && txt.length < 150) {
+                            // Timezone-safe parse
                             const ts = Date.parse(dateMatch[0]);
                             if (!isNaN(ts)) {
                                 const d = new Date(ts);
+                                // Sanity check to avoid parsing random numbers as ancient/future dates
                                 if (d.getFullYear() > 2000 && d.getFullYear() < 2100) {
                                     const offset = d.getTimezoneOffset() * 60000;
                                     const localIso = new Date(d.getTime() - offset).toISOString().split('T')[0];
@@ -1724,7 +1968,10 @@
                         }
                     });
 
+                    // IDENTIFY THE FIRST DATE HEADER IN THE DOCUMENT
                     let targetHeader = meetingHeaders.length > 0 ? meetingHeaders[0] : null;
+
+                    // EXTRACT ONLY FROM THIS FIRST DATE HEADER FORWARD
                     let startIndex = targetHeader ? targetHeader.index + 1 : 0;
 
                     const scanNodesForTasks = (startIdx) => {
@@ -1734,6 +1981,7 @@
                         for (let i = startIdx; i < flatNodes.length; i++) {
                             const paraNode = flatNodes[i];
                             
+                            // 1. Stop processing immediately when a horizontal divider appears
                             const hasHorizontalRule = paraNode.elements?.some(e => e.horizontalRule);
                             if (hasHorizontalRule) {
                                 console.log("Found horizontal divider, stopping extraction.");
@@ -1750,28 +1998,35 @@
                             let rawText = paraText.replace(/\u00A0/g, ' ').trim();
                             if (!rawText) continue;
 
+                            // 2. Stop processing immediately when another date header appears
                             if (targetHeader) {
                                 const thisHeader = meetingHeaders.find(h => h.index === i);
                                 if (thisHeader && thisHeader.index !== targetHeader.index) {
+                                    console.log("Found another date header, stopping extraction.", thisHeader.dateStr);
                                     break;
                                 }
                             }
 
                             if (/^(attendees|participants|guests|cc|to):/i.test(rawText)) continue;
 
+                            // Mark when we enter the "Action items" section
                             if (/^(action items|next steps|to do|tasks)(:| -)?/i.test(rawText)) {
                                 inActionItems = true;
                                 continue;
                             } else if (/^[a-zA-Z0-9\s]+(:| -)$/i.test(rawText) && rawText.length < 25) {
+                                // Exiting action items section if we hit a new generic heading
                                 inActionItems = false;
                             }
 
+                            // 3. Only extract items listed under "Action items"
                             if (inActionItems) {
                                 const manualCheckboxRegex = /^(\[ ?[xX]? ?\]|\( ?[xX]? ?\)|\u2610|\u2611|\u2714|-|\u25CF)\s*/i;
                                 let cleanText = rawText.replace(manualCheckboxRegex, '').trim();
 
                                 if (cleanText.length > 2) {
                                     const assignedTo = findUserInText(cleanText, richElements);
+                                    // 4. Only extract lines that contain an assigned owner
+                                    // Tasks without an assigned owner or generic commentary are naturally skipped since assignedTo is null.
                                     if (assignedTo) {
                                         const assignedUser = allPossibleAssignees.find(u => (u.id === assignedTo || u.email === assignedTo));
                                         if (assignedUser && assignedUser.name) {
@@ -1806,12 +2061,14 @@
                              if (existingTexts.has(normalizedText)) continue;
 
                              const taskId = `t_doc_${Date.now()}_${Math.floor(Math.random()*10000)}`;
+                             // Uses email for assigner mapping consistency
                              const newTaskObj = { id: taskId, meeting_id: meeting.id, text: task.text, assignee: task.assignee, assigner: currentUser.email, status: 'pending', start_date: taskStartDate, end_date: null, deleted: false, last_reminded_date: getTodayISO() };
                              
-                             setTasks(prev => [...prev, { ...newTaskObj, meetingId: meeting.id }]); 
+                             setTasks(prev => [...prev, { ...newTaskObj, meetingId: meeting.id }]); // update local
                              
                              if (client) { 
                                  await client.from('tasks').insert(newTaskObj); 
+                                 // BUFFERED Notification
                                  scheduleAssignmentNotification(newTaskObj, meeting.title, meeting.id);
                              }
                              
@@ -1826,7 +2083,7 @@
                             showToast(`Imported ${createdCount} tasks from ${msgSource}!`);
                         }
                     }
-                } catch (e) { console.error(e); showToast("Import failed: " + e.message); } finally { setGcalSyncStatus('live'); }
+                } catch (e) { console.error(e); showToast("Import failed: " + e.message); } finally { setIsSyncing(false); }
             };
 
             const handleAddTeamMember = async (email, name, team, role, systemRole) => {
@@ -1847,6 +2104,7 @@
                 const task = tasks.find(t => t.id === taskId);
                 const meeting = meetings.find(m => m.id === task?.meetingId);
                 
+                // Save previous state for potential undo
                 const prevStatus = task?.status;
                 const prevDone = task?.done;
 
@@ -1854,6 +2112,7 @@
                 if (dbStatus === 'connected' && client) { 
                     await client.from('tasks').update(updates).eq('id', taskId); 
                     
+                    // COMPLETION NOTIFICATION & UNDO
                     if (updates.status === 'completed' || updates.done === true) {
                         if (task && prevStatus !== 'completed' && !prevDone) {
                             scheduleCompletionNotification({ ...task, ...updates }, meeting?.title || 'Unknown Meeting');
@@ -1873,20 +2132,21 @@
                 }
             };
 
-            const handleAddStandaloneTask = async (text, assigneeId, start, end) => {
+            const handleAddStandaloneTask = (text, assigneeId, start, end) => {
                 if (!text.trim()) return;
                 const newId = `t_${Date.now()}`;
+                // Now enforcing email for assignment keys
                 const newTask = { id: newId, meeting_id: 'standalone', text: text, assignee: assigneeId || currentUser.email, assigner: currentUser.email, status: 'pending', start_date: start || getTodayISO(), end_date: end || getTodayISO(), deleted: false, last_reminded_date: getTodayISO() };
                 
                 setTasks(prev => [newTask, ...prev]);
                 if (dbStatus === 'connected' && client) { 
-                    const { error } = await client.from('tasks').insert(newTask);
-                    if (error) {
-                        console.error("Task Insert Error (Personal):", error);
-                        showToast("Failed to save task. Database schema might be outdated. Please run the SQL Setup script again.");
-                    } else {
-                        scheduleAssignmentNotification(newTask, 'Personal Task', 'standalone');
-                    }
+                    client.from('tasks').insert(newTask).then(({error}) => { 
+                        if(error) {
+                            console.error("Task Insert Error (Personal):", error);
+                            showToast("Failed to save task. Database schema might be outdated. Please run the SQL Setup script again.");
+                        }
+                        else scheduleAssignmentNotification(newTask, 'Personal Task', 'standalone'); // BUFFERED
+                    }); 
                 }
                 setShowQuickAdd(false);
             };
@@ -1922,7 +2182,7 @@
                             if (error) {
                                 console.error(error);
                                 showToast("Failed to delete from database: " + error.message);
-                                fetchData(client); 
+                                fetchData(client); // restore
                             } else {
                                 showToast("All tasks deleted successfully.");
                             }
@@ -1931,6 +2191,7 @@
                 });
             };
             
+            // --- AUTH HANDLERS RESTORED ---
             const handleGoogleLogin = async () => { if (!client) return; const { error } = await client.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: window.location.href, scopes: 'https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/documents.readonly' } }); if (error) showToast(error.message); };
             const handleEmailLogin = async (email) => { if (!client) return; const { error } = await client.auth.signInWithOtp({ email, options: { emailRedirectTo: window.location.href } }); if (error) showToast(error.message); };
             const handlePasswordLogin = async (email, password) => { if (!client) return; const { error } = await client.auth.signInWithPassword({ email, password }); if (error) showToast(error.message); };
@@ -1956,6 +2217,7 @@
                     }
                 });
             };
+            // --- END AUTH HANDLERS ---
 
             const isManager = useMemo(() => {
                 if (!currentUser) return false;
@@ -2009,10 +2271,12 @@
                     });
                 }
 
+                // Filtering Logic Update: Handle "Show Past"
                 let dateFiltered;
                 if (selectedDate) {
                     dateFiltered = relevantMeetings.filter(m => m.date === selectedDate);
                 } else {
+                    // If showing all, filter based on showPast toggle
                     if (showPast) {
                         dateFiltered = relevantMeetings;
                     } else {
@@ -2022,13 +2286,9 @@
                 }
 
                 return dateFiltered.sort((a, b) => {
-                    const getTimeVal = (m) => {
-                        if (!m.date) return 0;
-                        if (m.time === 'All Day' || !m.time) return new Date(`${m.date}T00:00:00`).getTime();
-                        const d = new Date(`${m.date} ${m.time}`);
-                        return isNaN(d.getTime()) ? new Date(`${m.date}T00:00:00`).getTime() : d.getTime();
-                    };
-                    return getTimeVal(a) - getTimeVal(b);
+                    const dateA = new Date(a.date + ' ' + (a.time || '00:00'));
+                    const dateB = new Date(b.date + ' ' + (b.time || '00:00'));
+                    return dateA - dateB; 
                 });
             }, [meetings, currentUser, selectedDate, meetingScope, isManager, teamMembers, showPast]);
 
@@ -2041,6 +2301,7 @@
                     const myId = currentUser?.id;
                     scopeFiltered = tasks.filter(t => { const assignee = (t.assignee || '').toLowerCase().trim(); return assignee === myId || assignee === myEmail; }); 
                 } else if (effectiveScope === 'assigned_by_me') {
+                    // Filter: Assignee is NOT me, but Assigner IS me
                     const myId = currentUser?.id;
                     const myEmail = currentUser?.email;
                     scopeFiltered = tasks.filter(t => {
@@ -2075,10 +2336,12 @@
                     });
                 }
                 
+                // Ensure Trash filter handles its scope logically
                 if (taskFilter === 'trash') {
                     return scopeFiltered.filter(t => t.deleted);
                 }
 
+                // Filter out deleted tasks for normal views
                 scopeFiltered = scopeFiltered.filter(t => !t.deleted);
 
                 if (taskFilter === 'all') return scopeFiltered;
@@ -2087,6 +2350,7 @@
                 return scopeFiltered;
             }, [tasks, taskFilter, taskScope, currentUser, teamMembers, session, isManager]);
 
+            // Meeting Aggregation logic for the individual meeting view
             const currentMeetingForView = meetings.find(x => x.id === selectedMeetingId);
             const aggregatedMeetingTasks = currentMeetingForView 
                 ? tasks.filter(t => {
@@ -2108,260 +2372,158 @@
                 <div className="flex flex-col h-screen bg-gray-50 dark:bg-gray-900 transition-colors">
                     {view === 'dashboard' ? (
                         <>
-                            <AppHeader currentUser={currentUser} onLogout={handleLogout} dbStatus={dbStatus} isDarkMode={isDarkMode} toggleDarkMode={toggleDarkMode} gcalSyncStatus={gcalSyncStatus} />
-                            <main className="flex-1 overflow-y-auto p-6">
-                                <div className="max-w-5xl mx-auto">
-                                    <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 gap-4">
-                                        <div>
-                                            <h2 className="text-2xl font-bold text-gray-900 dark:text-gray-100">
-                                                {dashboardViewMode === 'meetings' ? 'My Meetings' : (dashboardViewMode === 'tasks' ? 'My Tasks' : (dashboardViewMode === 'team' ? 'Team' : 'Reports'))}
-                                            </h2>
-                                            <p className="text-gray-500 dark:text-gray-400 text-sm mt-1">{currentUser.name}</p>
+                            <AppHeader currentUser={currentUser} onLogout={handleLogout} onSync={handleSync} dbStatus={dbStatus} isSyncing={isSyncing} syncRange={syncRange} setSyncRange={setSyncRange} lastSynced={lastSynced} isDarkMode={isDarkMode} toggleDarkMode={toggleDarkMode} gcalSyncStatus={gcalSyncStatus} />
+                            <main className="flex-1 overflow-y-auto p-6"><div className="max-w-5xl mx-auto">
+                                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 gap-4">
+                                    <div><h2 className="text-2xl font-bold text-gray-900 dark:text-gray-100">{dashboardViewMode === 'meetings' ? 'My Meetings' : (dashboardViewMode === 'tasks' ? 'My Tasks' : (dashboardViewMode === 'team' ? 'Team' : 'Reports'))}</h2><p className="text-gray-500 dark:text-gray-400 text-sm mt-1">{currentUser.name}</p></div>
+                                    <div className="flex flex-col sm:flex-row items-center gap-3 w-full sm:w-auto">
+                                        <div className="flex items-center space-x-1 bg-white dark:bg-gray-800 p-1 rounded-lg border border-gray-200 dark:border-gray-700 shadow-sm w-full sm:w-auto transition-colors">
+                                            <button onClick={() => setDashboardViewMode('meetings')} className={`flex-1 sm:flex-none px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${dashboardViewMode === 'meetings' ? 'bg-tempo-blue/10 dark:bg-tempo-blue/20 text-tempo-blue dark:text-blue-300' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700'}`}>Meetings</button>
+                                            <button onClick={() => setDashboardViewMode('tasks')} className={`flex-1 sm:flex-none px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${dashboardViewMode === 'tasks' ? 'bg-tempo-blue/10 dark:bg-tempo-blue/20 text-tempo-blue dark:text-blue-300' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700'}`}>Tasks</button>
+                                            
+                                            {currentUser.system_role === 'admin' && (
+                                                <>
+                                                    <button onClick={() => setDashboardViewMode('team')} className={`flex-1 sm:flex-none px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${dashboardViewMode === 'team' ? 'bg-tempo-blue/10 dark:bg-tempo-blue/20 text-tempo-blue dark:text-blue-300' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700'}`}>Team</button>
+                                                    <button onClick={() => setDashboardViewMode('reports')} className={`flex-1 sm:flex-none px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${dashboardViewMode === 'reports' ? 'bg-tempo-blue/10 dark:bg-tempo-blue/20 text-tempo-blue dark:text-blue-300' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700'}`}>Reports</button>
+                                                </>
+                                            )}
                                         </div>
-                                        <div className="flex flex-col sm:flex-row items-center gap-3 w-full sm:w-auto">
-                                            <div className="flex items-center space-x-1 bg-white dark:bg-gray-800 p-1 rounded-lg border border-gray-200 dark:border-gray-700 shadow-sm w-full sm:w-auto transition-colors">
-                                                <button 
-                                                    onClick={() => setDashboardViewMode('meetings')} 
-                                                    className={`flex-1 sm:flex-none px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${dashboardViewMode === 'meetings' ? 'bg-tempo-blue/10 dark:bg-tempo-blue/20 text-tempo-blue dark:text-blue-300' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700'}`}
-                                                >
-                                                    Meetings
-                                                </button>
-                                                <button 
-                                                    onClick={() => setDashboardViewMode('tasks')} 
-                                                    className={`flex-1 sm:flex-none px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${dashboardViewMode === 'tasks' ? 'bg-tempo-blue/10 dark:bg-tempo-blue/20 text-tempo-blue dark:text-blue-300' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700'}`}
-                                                >
-                                                    Tasks
-                                                </button>
-                                                
-                                                {currentUser.system_role === 'admin' && (
-                                                    <>
-                                                        <button 
-                                                            onClick={() => setDashboardViewMode('team')} 
-                                                            className={`flex-1 sm:flex-none px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${dashboardViewMode === 'team' ? 'bg-tempo-blue/10 dark:bg-tempo-blue/20 text-tempo-blue dark:text-blue-300' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700'}`}
-                                                        >
-                                                            Team
-                                                        </button>
-                                                        <button 
-                                                            onClick={() => setDashboardViewMode('reports')} 
-                                                            className={`flex-1 sm:flex-none px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${dashboardViewMode === 'reports' ? 'bg-tempo-blue/10 dark:bg-tempo-blue/20 text-tempo-blue dark:text-blue-300' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700'}`}
-                                                        >
-                                                            Reports
-                                                        </button>
-                                                    </>
+                                        {dashboardViewMode === 'meetings' && (
+                                            <div className="flex items-center gap-2">
+                                                <div className="relative w-full sm:w-auto">
+                                                    {isManager && (<div className="flex items-center bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-0.5 mb-2 sm:mb-0 sm:mr-2 transition-colors"><button onClick={() => setMeetingScope('me')} className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${meetingScope === 'me' ? 'bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-gray-100' : 'text-gray-500 dark:text-gray-400'}`}>Me</button><button onClick={() => setMeetingScope('team')} className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${meetingScope === 'team' ? 'bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-gray-100' : 'text-gray-500 dark:text-gray-400'}`}>My Team</button></div>)}
+                                                    <input type="date" value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)} className="w-full pl-10 pr-4 py-2 border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-tempo-blue shadow-sm"/><Icon name="Calendar" className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-4 h-4 pointer-events-none" />
+                                                </div>
+                                                {selectedDate ? (
+                                                    <button onClick={() => setSelectedDate('')} className="text-xs text-tempo-blue dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 underline whitespace-nowrap">Show All</button>
+                                                ) : (
+                                                    <button onClick={() => setShowPast(!showPast)} className={`text-xs px-2 py-1 rounded border ${showPast ? 'bg-tempo-blue/10 dark:bg-tempo-blue/20 text-tempo-blue dark:text-blue-400 border-tempo-blue/20 dark:border-blue-800' : 'text-gray-500 dark:text-gray-400 border-transparent hover:bg-gray-100 dark:hover:bg-gray-800'}`}>
+                                                        {showPast ? 'Hide Past' : 'Show Past'}
+                                                    </button>
                                                 )}
                                             </div>
-
-                                            {dashboardViewMode === 'meetings' && (
-                                                <div className="flex items-center gap-2">
-                                                    <div className="relative w-full sm:w-auto">
-                                                        {isManager && (
-                                                            <div className="flex items-center bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-0.5 mb-2 sm:mb-0 sm:mr-2 transition-colors">
-                                                                <button onClick={() => setMeetingScope('me')} className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${meetingScope === 'me' ? 'bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-gray-100' : 'text-gray-500 dark:text-gray-400'}`}>Me</button>
-                                                                <button onClick={() => setMeetingScope('team')} className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${meetingScope === 'team' ? 'bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-gray-100' : 'text-gray-500 dark:text-gray-400'}`}>My Team</button>
-                                                            </div>
-                                                        )}
-                                                        <input 
-                                                            type="date" 
-                                                            value={selectedDate} 
-                                                            onChange={(e) => setSelectedDate(e.target.value)} 
-                                                            className="w-full pl-10 pr-4 py-2 border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-tempo-blue shadow-sm"
-                                                        />
-                                                        <Icon name="Calendar" className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-4 h-4 pointer-events-none" />
-                                                    </div>
-                                                    {selectedDate ? (
-                                                        <button onClick={() => setSelectedDate('')} className="text-xs text-tempo-blue dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 underline whitespace-nowrap">
-                                                            Show All
-                                                        </button>
-                                                    ) : (
-                                                        <button onClick={() => setShowPast(!showPast)} className={`text-xs px-2 py-1 rounded border ${showPast ? 'bg-tempo-blue/10 dark:bg-tempo-blue/20 text-tempo-blue dark:text-blue-400 border-tempo-blue/20 dark:border-blue-800' : 'text-gray-500 dark:text-gray-400 border-transparent hover:bg-gray-100 dark:hover:bg-gray-800'}`}>
-                                                            {showPast ? 'Hide Past' : 'Show Past'}
-                                                        </button>
-                                                    )}
+                                        )}
+                                        {dashboardViewMode === 'tasks' && (
+                                            <div className="flex gap-2 w-full sm:w-auto items-center">
+                                                <div className="flex items-center bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-0.5 transition-colors">
+                                                    <button onClick={() => setTaskScope('me')} className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${taskScope === 'me' && taskFilter !== 'trash' ? 'bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-gray-100' : 'text-gray-500 dark:text-gray-400'}`} disabled={taskFilter === 'trash'}>Me</button>
+                                                    <button onClick={() => setTaskScope('assigned_by_me')} className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${taskScope === 'assigned_by_me' && taskFilter !== 'trash' ? 'bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-gray-100' : 'text-gray-500 dark:text-gray-400'}`} disabled={taskFilter === 'trash'}>Assigned by Me</button>
+                                                    {isManager && <button onClick={() => setTaskScope('team')} className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${taskScope === 'team' && taskFilter !== 'trash' ? 'bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-gray-100' : 'text-gray-500 dark:text-gray-400'}`} disabled={taskFilter === 'trash'}>My Team</button>}
                                                 </div>
-                                            )}
+                                                
+                                                {/* ADMIN DELETE BUTTON */}
+                                                {currentUser.system_role === 'admin' && (
+                                                    <button 
+                                                        onClick={handleDeleteAllTasks} 
+                                                        className="bg-tempo-red/10 dark:bg-tempo-red/20 text-tempo-red dark:text-red-400 p-2 rounded-lg hover:bg-tempo-red/20 dark:hover:bg-tempo-red/30 transition-colors" 
+                                                        title="Delete ALL Tasks (Admin Only)"
+                                                    >
+                                                        <Icon name="Trash2" className="w-4 h-4" />
+                                                    </button>
+                                                )}
 
-                                            {dashboardViewMode === 'tasks' && (
-                                                <div className="flex gap-2 w-full sm:w-auto items-center">
-                                                    <div className="flex items-center bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-0.5 transition-colors">
-                                                        <button onClick={() => setTaskScope('me')} className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${taskScope === 'me' && taskFilter !== 'trash' ? 'bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-gray-100' : 'text-gray-500 dark:text-gray-400'}`} disabled={taskFilter === 'trash'}>Me</button>
-                                                        <button onClick={() => setTaskScope('assigned_by_me')} className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${taskScope === 'assigned_by_me' && taskFilter !== 'trash' ? 'bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-gray-100' : 'text-gray-500 dark:text-gray-400'}`} disabled={taskFilter === 'trash'}>Assigned by Me</button>
-                                                        {isManager && <button onClick={() => setTaskScope('team')} className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${taskScope === 'team' && taskFilter !== 'trash' ? 'bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-gray-100' : 'text-gray-500 dark:text-gray-400'}`} disabled={taskFilter === 'trash'}>My Team</button>}
-                                                    </div>
-                                                    
-                                                    {currentUser.system_role === 'admin' && (
-                                                        <button 
-                                                            onClick={handleDeleteAllTasks} 
-                                                            className="bg-tempo-red/10 dark:bg-tempo-red/20 text-tempo-red dark:text-red-400 p-2 rounded-lg hover:bg-tempo-red/20 dark:hover:bg-tempo-red/30 transition-colors" 
-                                                            title="Delete ALL Tasks (Admin Only)"
-                                                        >
-                                                            <Icon name="Trash2" className="w-4 h-4" />
-                                                        </button>
-                                                    )}
-
-                                                    <div className="flex items-center bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-0.5 transition-colors">
-                                                        <button 
-                                                            onClick={() => setTaskFilter('pending')} 
-                                                            className={`px-3 py-1.5 text-xs font-medium rounded-md flex items-center gap-1.5 transition-colors ${taskFilter === 'pending' ? 'bg-tempo-yellow/20 dark:bg-tempo-yellow/20 text-yellow-800 dark:text-yellow-500 shadow-sm border border-tempo-yellow/30 dark:border-yellow-800' : 'text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700 border border-transparent'}`}
-                                                        >
-                                                            <Icon name="Circle" className="w-3 h-3" />
-                                                            Pending
-                                                        </button>
-                                                        <button 
-                                                            onClick={() => setTaskFilter('completed')} 
-                                                            className={`px-3 py-1.5 text-xs font-medium rounded-md flex items-center gap-1.5 transition-colors ${taskFilter === 'completed' ? 'bg-tempo-blue/10 dark:bg-tempo-blue/20 text-tempo-blue dark:text-blue-400 shadow-sm border border-tempo-blue/20 dark:border-blue-800' : 'text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700 border border-transparent'}`}
-                                                        >
-                                                            <Icon name="CheckCircle2" className="w-3 h-3" />
-                                                            Completed
-                                                        </button>
-                                                        <button 
-                                                            onClick={() => setTaskFilter('trash')} 
-                                                            className={`px-3 py-1.5 text-xs font-medium rounded-md flex items-center gap-1.5 transition-colors ${taskFilter === 'trash' ? 'bg-tempo-red/10 dark:bg-tempo-red/20 text-tempo-red dark:text-red-400 shadow-sm border border-tempo-red/20 dark:border-red-800' : 'text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700 border border-transparent'}`}
-                                                        >
-                                                            <Icon name="Trash2" className="w-3 h-3" />
-                                                            Trash
-                                                        </button>
-                                                    </div>
-
-                                                    <button onClick={() => setShowQuickAdd(!showQuickAdd)} className="bg-tempo-blue text-white p-2 rounded-lg hover:bg-tempo-hover" title="Add Personal Task">
-                                                        <Icon name="Plus" className="w-4 h-4" />
+                                                <div className="flex items-center bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-0.5 transition-colors">
+                                                    <button 
+                                                        onClick={() => setTaskFilter('pending')} 
+                                                        className={`px-3 py-1.5 text-xs font-medium rounded-md flex items-center gap-1.5 transition-colors ${taskFilter === 'pending' ? 'bg-tempo-yellow/20 dark:bg-tempo-yellow/20 text-yellow-800 dark:text-yellow-500 shadow-sm border border-tempo-yellow/30 dark:border-yellow-800' : 'text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700 border border-transparent'}`}
+                                                    >
+                                                        <Icon name="Circle" className="w-3 h-3" />
+                                                        Pending
+                                                    </button>
+                                                    <button 
+                                                        onClick={() => setTaskFilter('completed')} 
+                                                        className={`px-3 py-1.5 text-xs font-medium rounded-md flex items-center gap-1.5 transition-colors ${taskFilter === 'completed' ? 'bg-tempo-blue/10 dark:bg-tempo-blue/20 text-tempo-blue dark:text-blue-400 shadow-sm border border-tempo-blue/20 dark:border-blue-800' : 'text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700 border border-transparent'}`}
+                                                    >
+                                                        <Icon name="CheckCircle2" className="w-3 h-3" />
+                                                        Completed
+                                                    </button>
+                                                    <button 
+                                                        onClick={() => setTaskFilter('trash')} 
+                                                        className={`px-3 py-1.5 text-xs font-medium rounded-md flex items-center gap-1.5 transition-colors ${taskFilter === 'trash' ? 'bg-tempo-red/10 dark:bg-tempo-red/20 text-tempo-red dark:text-red-400 shadow-sm border border-tempo-red/20 dark:border-red-800' : 'text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700 border border-transparent'}`}
+                                                    >
+                                                        <Icon name="Trash2" className="w-3 h-3" />
+                                                        Trash
                                                     </button>
                                                 </div>
-                                            )}
-                                        </div>
-                                    </div>
-                                    
-                                    {dbStatus === 'setup_required' && ( 
-                                        <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 p-6 rounded-lg mb-6">
-                                            <h3 className="font-bold text-red-900 dark:text-red-400 mb-2">Database Missing Tables</h3>
-                                            <p className="text-sm text-red-700 dark:text-red-300 mb-4">Run this SQL in your Supabase Dashboard:</p>
-                                            <div className="bg-gray-900 text-gray-100 p-3 rounded text-xs overflow-auto max-h-32 mb-4">
-                                                <pre>{SQL_SETUP_INSTRUCTIONS}</pre>
-                                            </div>
-                                            <button onClick={() => fetchData(client)} className="bg-red-600 text-white px-4 py-2 rounded text-sm">Retry Connection</button>
-                                        </div> 
-                                    )}
 
-                                    {dashboardViewMode === 'meetings' ? (
-                                        <>
-                                            {sortedMeetings.length > 0 ? (
-                                                <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
-                                                    {sortedMeetings.map(m => (
-                                                        <MeetingCard key={m.id} meeting={m} onClick={() => { setSelectedMeetingId(m.id); setView('meeting'); }} onAutoImport={(m, s) => handleImportFromDoc(m, s)} />
-                                                    ))}
-                                                </div>
-                                            ) : (
-                                                <div className="text-center py-20 bg-white dark:bg-gray-800 rounded-xl border border-dashed border-gray-300 dark:border-gray-700">
-                                                    <p className="text-gray-500 dark:text-gray-400">No meetings found {selectedDate ? `for ${selectedDate}` : ''}.</p>
-                                                </div>
-                                            )}
-                                        </>
-                                    ) : dashboardViewMode === 'tasks' ? (
-                                        <div className="space-y-4">
-                                            {showQuickAdd && (
-                                                <div className="bg-white dark:bg-gray-800 border border-tempo-blue/20 dark:border-tempo-blue/50 p-4 rounded-lg shadow-sm mb-4 animate-in fade-in slide-in-from-top-2">
-                                                    <form onSubmit={(e) => { 
-                                                        e.preventDefault(); 
-                                                        handleAddStandaloneTask(
-                                                            e.target.elements.taskText.value, 
-                                                            e.target.elements.taskAssignee.value,
-                                                            e.target.elements.taskStartDate.value,
-                                                            e.target.elements.taskEndDate.value
-                                                        ); 
-                                                        e.target.reset(); 
-                                                    }} className="flex flex-col gap-2">
-                                                        <div className="flex flex-col sm:flex-row gap-2">
-                                                            <input name="taskText" type="text" placeholder="What do you need to do?" className="flex-1 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white rounded px-3 py-2 text-sm focus:ring-2 focus:ring-tempo-blue outline-none" autoFocus />
-                                                            <select name="taskAssignee" className="border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white rounded px-3 py-2 text-sm focus:ring-2 focus:ring-tempo-blue outline-none" defaultValue={currentUser?.email}>
-                                                                <option value={currentUser?.email}>Me</option>
-                                                                {allPossibleAssignees.filter(u => u.email !== currentUser?.email).map(u => (
-                                                                    <option key={u.email} value={u.email}>{u.name || u.email}</option>
-                                                                ))}
-                                                            </select>
-                                                        </div>
-                                                        <div className="flex flex-col sm:flex-row gap-2 items-center">
-                                                            <div className="flex items-center gap-1 w-full sm:w-auto">
-                                                                <span className="text-xs text-gray-500 dark:text-gray-400">Start:</span>
-                                                                <input name="taskStartDate" type="date" defaultValue={getTodayISO()} className="border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white rounded px-2 py-1 text-xs focus:ring-2 focus:ring-tempo-blue outline-none" />
-                                                            </div>
-                                                            <div className="flex items-center gap-1 w-full sm:w-auto">
-                                                                <span className="text-xs text-gray-500 dark:text-gray-400">Due:</span>
-                                                                <input name="taskEndDate" type="date" defaultValue={getTodayISO()} className="border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white rounded px-2 py-1 text-xs focus:ring-2 focus:ring-tempo-blue outline-none" />
-                                                            </div>
-                                                            <button type="submit" className="bg-tempo-blue hover:bg-tempo-hover text-white px-4 py-1.5 rounded text-sm font-medium whitespace-nowrap ml-auto transition-colors">Add Task</button>
-                                                        </div>
-                                                    </form>
-                                                </div>
-                                            )}
-                                            {filteredTasks.length > 0 ? (
-                                                filteredTasks.map(t => { 
-                                                    const mtg = meetings.find(m => m.id === (t.meetingId || t.meeting_id)); 
-                                                    const user = allPossibleAssignees.find(c => c.email === t.assignee || c.id === t.assignee) || { name: 'Unknown' }; 
-                                                    t.assigneeName = user.name || user.email; 
-                                                    return (
-                                                        <TaskCard 
-                                                            key={t.id} 
-                                                            task={t} 
-                                                            meetingTitle={mtg ? mtg.title : (t.meeting_id === 'standalone' ? 'Personal Task' : 'Unknown Meeting')} 
-                                                            onStatusChange={(id, val) => handleUpdateTask(id, { status: val, done: val === 'completed' })} 
-                                                            onObstacleChange={(id, val) => handleUpdateTask(id, { obstacles: val })} 
-                                                            onDateChange={(id, val) => handleUpdateTask(id, { end_date: val })} 
-                                                            currentUser={currentUser} 
-                                                            onDelete={handleDeleteTask} 
-                                                            onUpdateText={handleUpdateText} 
-                                                            onRestore={handleRestoreTask} 
-                                                            isTrash={t.deleted} 
-                                                        />
-                                                    ); 
-                                                })
-                                            ) : (
-                                                <div className="text-center py-12 bg-white dark:bg-gray-800 rounded-xl border border-dashed border-gray-300 dark:border-gray-700 text-gray-500 dark:text-gray-400">
-                                                    No tasks found matching filter.
-                                                </div>
-                                            )}
-                                        </div>
-                                    ) : dashboardViewMode === 'team' ? (
-                                        <TeamList teamMembers={teamMembers} colleagues={colleagues} onAddMember={handleAddTeamMember} onUpdateMember={handleUpdateTeamMember} onRemoveMember={handleRemoveTeamMember}/>
-                                    ) : ( 
-                                        <ReportsView meetings={meetings} tasks={tasks} attendees={allPossibleAssignees} teamMembers={teamMembers} /> 
-                                    )}
+                                                <button onClick={() => setShowQuickAdd(!showQuickAdd)} className="bg-tempo-blue text-white p-2 rounded-lg hover:bg-tempo-hover" title="Add Personal Task"><Icon name="Plus" className="w-4 h-4" /></button>
+                                            </div>
+                                        )}
+                                    </div>
                                 </div>
-                            </main>
+                                
+                                {dbStatus === 'setup_required' && ( <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 p-6 rounded-lg mb-6"><h3 className="font-bold text-red-900 dark:text-red-400 mb-2">Database Missing Tables</h3><p className="text-sm text-red-700 dark:text-red-300 mb-4">Run this SQL in your Supabase Dashboard:</p><div className="bg-gray-900 text-gray-100 p-3 rounded text-xs overflow-auto max-h-32 mb-4"><pre>{SQL_SETUP_INSTRUCTIONS}</pre></div><button onClick={() => fetchData(client)} className="bg-red-600 text-white px-4 py-2 rounded text-sm">Retry Connection</button></div> )}
+
+                                {dashboardViewMode === 'meetings' ? (
+                                    <>{sortedMeetings.length > 0 ? (<div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">{sortedMeetings.map(m => <MeetingCard key={m.id} meeting={m} onClick={() => { setSelectedMeetingId(m.id); setView('meeting'); }} onAutoImport={(m, s) => handleImportFromDoc(m, s)} />)}</div>) : (<div className="text-center py-20 bg-white dark:bg-gray-800 rounded-xl border border-dashed border-gray-300 dark:border-gray-700"><p className="text-gray-500 dark:text-gray-400">No meetings found {selectedDate ? `for ${selectedDate}` : ''}.</p>{dbStatus === 'empty' && <p className="text-sm text-tempo-blue dark:text-blue-400 mt-2">Click "Sync" to load from Google.</p>}</div>)}</>
+                                ) : dashboardViewMode === 'tasks' ? (
+                                    <div className="space-y-4">
+                                        {showQuickAdd && (
+                                            <div className="bg-white dark:bg-gray-800 border border-tempo-blue/20 dark:border-tempo-blue/50 p-4 rounded-lg shadow-sm mb-4 animate-in fade-in slide-in-from-top-2">
+                                                <form onSubmit={(e) => { 
+                                                    e.preventDefault(); 
+                                                    handleAddStandaloneTask(
+                                                        e.target.elements.taskText.value, 
+                                                        e.target.elements.taskAssignee.value,
+                                                        e.target.elements.taskStartDate.value,
+                                                        e.target.elements.taskEndDate.value
+                                                    ); 
+                                                    e.target.reset(); 
+                                                }} className="flex flex-col gap-2">
+                                                    <div className="flex flex-col sm:flex-row gap-2">
+                                                        <input name="taskText" type="text" placeholder="What do you need to do?" className="flex-1 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white rounded px-3 py-2 text-sm focus:ring-2 focus:ring-tempo-blue outline-none" autoFocus />
+                                                        <select name="taskAssignee" className="border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white rounded px-3 py-2 text-sm focus:ring-2 focus:ring-tempo-blue outline-none" defaultValue={currentUser?.email}>
+                                                            <option value={currentUser?.email}>Me</option>
+                                                            {allPossibleAssignees.filter(u => u.email !== currentUser?.email).map(u => (
+                                                                <option key={u.email} value={u.email}>{u.name || u.email}</option>
+                                                            ))}
+                                                        </select>
+                                                    </div>
+                                                    <div className="flex flex-col sm:flex-row gap-2 items-center">
+                                                        <div className="flex items-center gap-1 w-full sm:w-auto">
+                                                            <span className="text-xs text-gray-500 dark:text-gray-400">Start:</span>
+                                                            <input name="taskStartDate" type="date" defaultValue={getTodayISO()} className="border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white rounded px-2 py-1 text-xs focus:ring-2 focus:ring-tempo-blue outline-none" />
+                                                        </div>
+                                                        <div className="flex items-center gap-1 w-full sm:w-auto">
+                                                            <span className="text-xs text-gray-500 dark:text-gray-400">Due:</span>
+                                                            <input name="taskEndDate" type="date" defaultValue={getTodayISO()} className="border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white rounded px-2 py-1 text-xs focus:ring-2 focus:ring-tempo-blue outline-none" />
+                                                        </div>
+                                                        <button type="submit" className="bg-tempo-blue hover:bg-tempo-hover text-white px-4 py-1.5 rounded text-sm font-medium whitespace-nowrap ml-auto transition-colors">Add Task</button>
+                                                    </div>
+                                                </form>
+                                            </div>
+                                        )}
+                                        {filteredTasks.length > 0 ? (filteredTasks.map(t => { const mtg = meetings.find(m => m.id === (t.meetingId || t.meeting_id)); const user = allPossibleAssignees.find(c => c.email === t.assignee || c.id === t.assignee) || { name: 'Unknown' }; t.assigneeName = user.name || user.email; return (<TaskCard key={t.id} task={t} meetingTitle={mtg ? mtg.title : (t.meeting_id === 'standalone' ? 'Personal Task' : 'Unknown Meeting')} onStatusChange={(id, val) => handleUpdateTask(id, { status: val, done: val === 'completed' })} onObstacleChange={(id, val) => handleUpdateTask(id, { obstacles: val })} onDateChange={(id, val) => handleUpdateTask(id, { end_date: val })} currentUser={currentUser} onDelete={handleDeleteTask} onUpdateText={handleUpdateText} onRestore={handleRestoreTask} isTrash={t.deleted} />); })) : (<div className="text-center py-12 bg-white dark:bg-gray-800 rounded-xl border border-dashed border-gray-300 dark:border-gray-700 text-gray-500 dark:text-gray-400">No tasks found matching filter.</div>)}
+                                    </div>
+                                ) : dashboardViewMode === 'team' ? (
+                                    <TeamList teamMembers={teamMembers} colleagues={colleagues} onAddMember={handleAddTeamMember} onUpdateMember={handleUpdateTeamMember} onRemoveMember={handleRemoveTeamMember}/>
+                                ) : ( <ReportsView meetings={meetings} tasks={tasks} attendees={allPossibleAssignees} teamMembers={teamMembers} /> )}
+                            </div></main>
                         </>
                     ) : (
                         view === 'meeting' && currentMeetingForView && (
                             <>
                                 <AppHeader currentUser={currentUser} onLogout={handleLogout} dbStatus={dbStatus} onBack={() => setView('dashboard')} title={currentMeetingForView.title} meeting={currentMeetingForView} isDarkMode={isDarkMode} toggleDarkMode={toggleDarkMode} gcalSyncStatus={gcalSyncStatus} />
                                 <div className="flex-1 overflow-hidden flex flex-col">
-                                    <TaskManager 
-                                        tasks={aggregatedMeetingTasks} 
-                                        meetings={meetings} 
-                                        attendees={allPossibleAssignees} 
-                                        currentUserEmail={currentUser?.email} 
-                                        onUpdateTask={handleUpdateTask} 
-                                        currentUser={currentUser} 
-                                        onDelete={handleDeleteTask} 
-                                        onUpdateText={handleUpdateText} 
-                                        onRestore={handleRestoreTask}
-                                        onAdd={async (mId, text, assignee, start, end) => { 
-                                            const newId = `t_${Date.now()}_${Math.floor(Math.random() * 1000)}`; 
-                                            const newTaskObj = { id: newId, meeting_id: mId, text, assignee, assigner: currentUser.email, status: 'pending', start_date: start, end_date: end, deleted: false, done: false, last_reminded_date: getTodayISO() };
-                                            setTasks(prev => [...prev, { ...newTaskObj, meetingId: mId }]); 
-                                            
-                                            if (dbStatus === 'connected' && client) { 
-                                                const { error } = await client.from('tasks').insert(newTaskObj);
+                                    <TaskManager tasks={aggregatedMeetingTasks} meetings={meetings} attendees={allPossibleAssignees} currentUserEmail={currentUser?.email} onUpdateTask={handleUpdateTask} currentUser={currentUser} onDelete={handleDeleteTask} onUpdateText={handleUpdateText} onRestore={handleRestoreTask}
+                                    onAdd={(mId, text, assignee, start, end) => { 
+                                        const newId = `t_${Date.now()}_${Math.floor(Math.random() * 1000)}`; 
+                                        const newTaskObj = { id: newId, meeting_id: mId, text, assignee, assigner: currentUser.email, status: 'pending', start_date: start, end_date: end, deleted: false, done: false, last_reminded_date: getTodayISO() };
+                                        setTasks(prev => [...prev, { ...newTaskObj, meetingId: mId }]); 
+                                        
+                                        if (dbStatus === 'connected' && client) { 
+                                            client.from('tasks').insert(newTaskObj).then(({ error }) => {
                                                 if (error) {
                                                     console.error("Task Insert Error:", error);
                                                     showToast("Failed to save task. Database schema might be outdated. Please run the SQL Setup script again.");
                                                 } else {
                                                     const m = meetings.find(x => x.id === selectedMeetingId);
-                                                    scheduleAssignmentNotification(newTaskObj, m?.title || 'Meeting', mId);
+                                                    scheduleAssignmentNotification(newTaskObj, m.title, m.id);
                                                 }
-                                            } 
-                                        }} 
-                                        meetingId={selectedMeetingId} 
-                                        teamMembers={teamMembers} 
-                                        onImport={() => handleImportFromDoc(currentMeetingForView)} 
-                                    />
+                                            }); 
+                                        } 
+                                    }} 
+                                    meetingId={selectedMeetingId} teamMembers={teamMembers} onImport={() => handleImportFromDoc(currentMeetingForView)} />
                                 </div>
                             </>
                         )
@@ -2397,20 +2559,14 @@
                                 </p>
                                 <div className="flex justify-end gap-3">
                                     {dialogConfig.type === 'confirm' && (
-                                        <button 
-                                            onClick={() => setDialogConfig(null)} 
-                                            className="px-4 py-2 text-sm font-medium text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
-                                        >
+                                        <button onClick={() => setDialogConfig(null)} className="px-4 py-2 text-sm font-medium text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors">
                                             Cancel
                                         </button>
                                     )}
-                                    <button 
-                                        onClick={() => {
-                                            if(dialogConfig.onConfirm) dialogConfig.onConfirm();
-                                            setDialogConfig(null);
-                                        }} 
-                                        className={`px-4 py-2 text-sm font-medium text-white rounded-lg transition-colors ${dialogConfig.type === 'confirm' ? 'bg-tempo-red hover:bg-red-700' : 'bg-tempo-blue hover:bg-blue-700'}`}
-                                    >
+                                    <button onClick={() => {
+                                        if(dialogConfig.onConfirm) dialogConfig.onConfirm();
+                                        setDialogConfig(null);
+                                    }} className={`px-4 py-2 text-sm font-medium text-white rounded-lg transition-colors ${dialogConfig.type === 'confirm' ? 'bg-tempo-red hover:bg-red-700' : 'bg-tempo-blue hover:bg-blue-700'}`}>
                                         {dialogConfig.type === 'confirm' ? 'Proceed' : 'OK'}
                                     </button>
                                 </div>
