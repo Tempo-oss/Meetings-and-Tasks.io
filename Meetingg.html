@@ -1504,11 +1504,19 @@ end $$;
                 if (!session?.provider_token || !client) return;
                 setGcalSyncStatus('syncing');
                 try {
-                    // Default to 30 days ago for first auto-sync if no deep sync happened recently
-                    const timeMinIso = lastGcalSyncRef.current || new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
                     const cacheBuster = new Date().getTime();
-                    
-                    const resp = await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events?updatedMin=${timeMinIso}&singleEvents=true&maxResults=2500&_${cacheBuster}`, {
+                    let fetchUrl = '';
+
+                    if (lastGcalSyncRef.current) {
+                        // Polling: Only get events modified since the last check
+                        fetchUrl = `https://www.googleapis.com/calendar/v3/calendars/primary/events?updatedMin=${lastGcalSyncRef.current}&singleEvents=true&maxResults=2500&_${cacheBuster}`;
+                    } else {
+                        // Initial Load: Get all events occurring from 30 days ago into the future
+                        const timeMinIso = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+                        fetchUrl = `https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${timeMinIso}&orderBy=startTime&singleEvents=true&maxResults=2500&_${cacheBuster}`;
+                    }
+
+                    const resp = await fetch(fetchUrl, {
                         headers: { 
                             Authorization: `Bearer ${session.provider_token}`,
                             'Cache-Control': 'no-cache, no-store, must-revalidate'
@@ -2192,7 +2200,7 @@ end $$;
             };
             
             // --- AUTH HANDLERS RESTORED ---
-            const handleGoogleLogin = async () => { if (!client) return; const { error } = await client.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: window.location.href, scopes: 'https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/documents.readonly' } }); if (error) showToast(error.message); };
+            const handleGoogleLogin = async () => { if (!client) return; const { error } = await client.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: window.location.href, scopes: 'https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/documents.readonly', queryParams: { prompt: 'consent', access_type: 'offline' } } }); if (error) showToast(error.message); };
             const handleEmailLogin = async (email) => { if (!client) return; const { error } = await client.auth.signInWithOtp({ email, options: { emailRedirectTo: window.location.href } }); if (error) showToast(error.message); };
             const handlePasswordLogin = async (email, password) => { if (!client) return; const { error } = await client.auth.signInWithPassword({ email, password }); if (error) showToast(error.message); };
             const handleSignUp = async (email, password) => { if (!client) return; const { error } = await client.auth.signUp({ email, password, options: { data: { full_name: email.split('@')[0] } } }); if (error) showToast(error.message); else showToast("Sign up successful! Please check your email."); };
