@@ -17,13 +17,13 @@
                 extend: {
                     colors: {
                         tempo: {
-                            logo: '#4A443A',   // The dark olive/brown from the word TEMPO
-                            ice: '#D2DFED',    // The light blue background of the product shot
-                            blue: '#2A52BE',   // The blue weights
-                            yellow: '#E5C531', // The yellow weights
-                            red: '#D33534',    // The red weights
-                            dark: '#262626',   // The charcoal rack
-                            hover: '#1e3b8a'   // Hover state for blue buttons
+                            logo: '#4A443A',   
+                            ice: '#D2DFED',    
+                            blue: '#2A52BE',   
+                            yellow: '#E5C531', 
+                            red: '#D33534',    
+                            dark: '#262626',   
+                            hover: '#1e3b8a'   
                         }
                     },
                     fontFamily: {
@@ -54,13 +54,13 @@
         .dark ::-webkit-scrollbar-thumb:hover { background: #64748b; }
         
         .tempo-btn {
-            background-color: #262626; /* Charcoal */
+            background-color: #262626; 
             color: white;
-            border-radius: 9999px; /* Pill shape */
+            border-radius: 9999px; 
             transition: all 0.2s;
         }
         .tempo-btn:hover {
-            background-color: #4A443A; /* Logo Olive */
+            background-color: #4A443A; 
             transform: translateY(-1px);
         }
         .tempo-btn:disabled {
@@ -71,7 +71,6 @@
         .dark .tempo-btn { background-color: #D2DFED; color: #262626; }
         .dark .tempo-btn:hover { background-color: #ffffff; }
 
-        /* Admin Edit Mode Input */
         .admin-edit-input {
             border: 1px dashed #2A52BE;
             background-color: #eff6ff;
@@ -119,7 +118,7 @@
         const SQL_SETUP_INSTRUCTIONS = `
 -- Run these commands in your Supabase SQL Editor to fix permissions and missing columns:
 
--- 1. Create Tables (Safe to run, will skip if they exist)
+-- 1. Create Tables
 create table if not exists meetings (
     id text primary key,
     title text,
@@ -271,7 +270,6 @@ end $$;
             );
         };
 
-        // --- Sub-Components ---
         const UserAvatar = ({ user, size = 'md' }) => {
             const sizeClasses = { sm: 'w-6 h-6 text-xs', md: 'w-8 h-8 text-sm', lg: 'w-10 h-10 text-base' };
             if (!user) return null;
@@ -307,7 +305,6 @@ end $$;
                     {dbStatus === 'connected' && <span className="hidden sm:inline-flex bg-tempo-blue/10 text-tempo-blue dark:bg-tempo-blue/20 dark:text-blue-300 text-[10px] uppercase font-bold tracking-wide px-2 py-0.5 rounded-full flex-shrink-0 ml-2">DB: Live</span>}
                     {dbStatus === 'setup_required' && <span className="hidden sm:inline-flex bg-tempo-red/10 text-tempo-red dark:bg-tempo-red/20 dark:text-red-300 text-[10px] uppercase font-bold tracking-wide px-2 py-0.5 rounded-full flex-shrink-0 ml-2">DB Setup</span>}
                     
-                    {/* Real-time Google Calendar Status Badges */}
                     {gcalSyncStatus === 'live' && <span className="hidden sm:inline-flex bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400 text-[10px] uppercase font-bold tracking-wide px-2 py-0.5 rounded-full flex-shrink-0 ml-1" title="Continuously synced with Google Calendar">GCal: Live</span>}
                     {gcalSyncStatus === 'syncing' && <span className="hidden sm:inline-flex bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400 text-[10px] uppercase font-bold tracking-wide px-2 py-0.5 rounded-full flex-shrink-0 ml-1 animate-pulse">GCal: Syncing</span>}
                     {gcalSyncStatus === 'stale' && <span className="hidden sm:inline-flex bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400 text-[10px] uppercase font-bold tracking-wide px-2 py-0.5 rounded-full flex-shrink-0 ml-1" title="Outdated data. Google sync paused or network error.">GCal: Stale</span>}
@@ -318,7 +315,6 @@ end $$;
                         <Icon name={isDarkMode ? 'Sun' : 'Moon'} className="w-5 h-5" />
                     </button>
 
-                    {/* Join Meeting Button */}
                     {meeting && meeting.video_link && (
                         <a 
                             href={meeting.video_link} 
@@ -371,7 +367,7 @@ end $$;
             
             const handleClick = (e) => {
                 if (meeting.google_doc_link && onAutoImport) {
-                    onAutoImport(meeting, true); // true = silent
+                    onAutoImport(meeting, true); 
                 }
                 onClick();
             };
@@ -448,12 +444,10 @@ end $$;
 
             return (
                 <div className={`bg-white dark:bg-gray-800 border ${isTrash ? 'border-gray-200 dark:border-gray-700 opacity-75' : (isCompleted ? 'border-tempo-blue/20 dark:border-tempo-blue/30 bg-tempo-blue/5 dark:bg-tempo-blue/10' : 'border-gray-200 dark:border-gray-700')} rounded-lg transition-all duration-200 hover:shadow-md mb-3`}>
-                    {/* Collapsed View / Header */}
                     <div 
                         className="flex items-start p-3 cursor-pointer group" 
                         onClick={() => setIsExpanded(!isExpanded)}
                     >
-                        {/* Checkbox Icon */}
                         <div 
                             className={`mt-0.5 mr-3 flex-shrink-0 transition-colors ${isTrash ? 'text-gray-300 dark:text-gray-600' : (isCompleted ? 'text-tempo-blue hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300' : 'text-gray-300 dark:text-gray-500 hover:text-tempo-blue dark:hover:text-tempo-blue')}`}
                             onClick={handleIconClick}
@@ -466,7 +460,6 @@ end $$;
                             )}
                         </div>
 
-                        {/* Task Title & Summary */}
                         <div className="flex-1 min-w-0">
                             {isEditingText ? (
                                 <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
@@ -495,7 +488,6 @@ end $$;
                                 </div>
                             )}
                             
-                            {/* Summary Metadata (Visible when collapsed) */}
                             {!isExpanded && (
                                 <div className="flex items-center mt-1.5 space-x-3 text-xs text-gray-400 dark:text-gray-500">
                                     {task.end_date && (
@@ -526,7 +518,6 @@ end $$;
                             )}
                         </div>
 
-                        {/* Actions */}
                         {isTrash ? (
                             <button 
                                 onClick={(e) => { e.stopPropagation(); onRestore(task.id); }}
@@ -547,20 +538,16 @@ end $$;
                             )
                         )}
 
-                        {/* Expand Chevron */}
                         <div className={`ml-2 text-gray-300 dark:text-gray-600 transition-transform duration-200 ${isExpanded ? 'rotate-90' : '-rotate-90'}`}>
                             <Icon name="ChevronLeft" className="w-4 h-4" />
                         </div>
                     </div>
 
-                    {/* Expanded Details */}
                     {isExpanded && (
                         <div className="px-4 pb-4 pt-0 pl-11">
                             <div className="pt-3 border-t border-gray-100/60 dark:border-gray-700/60 flex flex-col gap-3 animate-in fade-in zoom-in-95 duration-200">
                                 
-                                {/* Meta Controls Row */}
                                 <div className="flex flex-wrap gap-4 text-xs">
-                                    {/* Status Select */}
                                     {!isTrash && (
                                         <div className="flex flex-col gap-1">
                                             <label className="font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider text-[10px]">Status</label>
@@ -576,7 +563,6 @@ end $$;
                                         </div>
                                     )}
 
-                                    {/* Due Date */}
                                     <div className="flex flex-col gap-1">
                                         <label className="font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider text-[10px]">Due Date</label>
                                         <input 
@@ -589,7 +575,6 @@ end $$;
                                         />
                                     </div>
 
-                                    {/* Assignee Display */}
                                     <div className="flex flex-col gap-1">
                                         <label className="font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider text-[10px]">Assignee</label>
                                         <div className="flex items-center h-[29px] text-gray-700 dark:text-gray-300">
@@ -597,7 +582,6 @@ end $$;
                                         </div>
                                     </div>
 
-                                    {/* Source */}
                                     {meetingTitle && (
                                         <div className="flex flex-col gap-1 max-w-[150px]">
                                             <label className="font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider text-[10px]">Source</label>
@@ -608,7 +592,6 @@ end $$;
                                     )}
                                 </div>
 
-                                {/* Obstacles / Notes */}
                                 <div className="mt-1">
                                     <label className="flex items-center text-[10px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-1.5">
                                         <Icon name="FileText" className="w-3 h-3 mr-1" />
@@ -639,7 +622,6 @@ end $$;
             const [chartEndDate, setChartEndDate] = useState('');
             const [reportGenerated, setReportGenerated] = useState(false);
             
-            // EXCLUDE DELETED TASKS FROM REPORTS
             const activeTasks = useMemo(() => tasks.filter(t => !t.deleted), [tasks]);
 
             const uniqueOwners = useMemo(() => {
@@ -678,7 +660,6 @@ end $$;
             }, [activeTasks, attendees, chartStartDate, chartEndDate]);
             const maxChartVal = Math.max(...chartData.map(d => d.total), 1);
 
-            // New Flat Report Data mapped to a Table
             const flatReportData = useMemo(() => {
                 const data = [];
                 const getAssigneeEmail = (idOrEmail) => {
@@ -744,7 +725,6 @@ end $$;
 
             return (
                 <div className="space-y-6">
-                    {/* STATS & CHART SECTION */}
                     <div className="bg-white dark:bg-gray-800 p-6 rounded-xl border border-gray-200 dark:border-gray-700 transition-colors">
                         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 gap-4">
                             <div>
@@ -771,25 +751,21 @@ end $$;
                              ) : (
                                  chartData.map((d, i) => (
                                      <div key={i} className="flex flex-col items-center min-w-[50px] flex-1 group relative h-full justify-end">
-                                          {/* Tooltip */}
                                           <div className="absolute -top-12 left-1/2 -translate-x-1/2 bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-900 text-[10px] py-1 px-2 rounded opacity-0 group-hover:opacity-100 transition-opacity z-10 whitespace-nowrap pointer-events-none shadow-md">
                                               {d.name}<br/>
                                               Done: {d.completed} | Pending: {d.pending}
                                           </div>
                                           
-                                          {/* Bar Container */}
                                           <div 
                                               className="w-full max-w-[40px] flex flex-col-reverse rounded-t-md overflow-hidden bg-gray-100 dark:bg-gray-700 relative shadow-sm"
-                                              style={{ height: `${Math.max((d.total / maxChartVal) * 100, 5)}%` }} // Ensure min height for visibility
+                                              style={{ height: `${Math.max((d.total / maxChartVal) * 100, 5)}%` }} 
                                           >
-                                              {/* Completed Segment (Blue) */}
                                               <div 
                                                   style={{ height: `${(d.completed / d.total) * 100}%` }} 
                                                   className="bg-tempo-blue w-full transition-all duration-500 relative flex items-center justify-center overflow-hidden"
                                               >
                                                   {d.completed > 0 && <span className="text-[10px] font-bold text-white shadow-sm">{d.completed}</span>}
                                               </div>
-                                              {/* Pending Segment (Yellow) */}
                                               <div 
                                                   style={{ height: `${(d.pending / d.total) * 100}%` }} 
                                                   className="bg-tempo-yellow w-full transition-all duration-500 relative flex items-center justify-center overflow-hidden"
@@ -804,14 +780,12 @@ end $$;
                              )}
                         </div>
                         
-                        {/* Legend */}
                         <div className="flex justify-center gap-6 mt-2 border-t border-gray-100 dark:border-gray-700 pt-4">
                             <div className="flex items-center text-xs text-gray-600 dark:text-gray-400"><div className="w-3 h-3 bg-tempo-yellow rounded-sm mr-2"></div>Pending</div>
                             <div className="flex items-center text-xs text-gray-600 dark:text-gray-400"><div className="w-3 h-3 bg-tempo-blue rounded-sm mr-2"></div>Completed</div>
                         </div>
                     </div>
 
-                    {/* Filters and List... */}
                       <div className="bg-white dark:bg-gray-800 p-4 rounded-xl border border-gray-200 dark:border-gray-700 flex flex-wrap gap-4 items-end shadow-sm transition-colors">
                         <div className="flex flex-col gap-1 w-full sm:w-auto flex-1 min-w-[150px]">
                             <label className="text-[10px] font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider">Owner</label>
@@ -840,7 +814,6 @@ end $$;
                         </button>
                     </div>
 
-                    {/* Report Table List */}
                     {reportGenerated && (
                         <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden shadow-sm animate-in fade-in slide-in-from-bottom-4 duration-500">
                             <div className="p-4 bg-gray-50 dark:bg-gray-900/50 border-b border-gray-200 dark:border-gray-700 flex justify-between items-center">
@@ -941,7 +914,6 @@ end $$;
                         </form>
                     </div>
 
-                    {/* Collapsible Unassigned List */}
                     {displayUnassigned.length > 0 && (
                         <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden shadow-sm transition-colors">
                             <button 
@@ -1136,7 +1108,6 @@ end $$;
                 <div className="h-full flex items-center justify-center bg-tempo-ice dark:bg-gray-900 p-4 transition-colors duration-200">
                     <div className="bg-white dark:bg-gray-800 p-10 rounded-3xl shadow-2xl max-w-md w-full text-center border border-transparent dark:border-gray-700">
                         
-                        {/* Decorative Trio of Accents mirroring the image's weights */}
                         <div className="flex justify-center gap-3 mb-6">
                             <div className="w-8 h-8 rounded-full bg-tempo-yellow shadow-inner"></div>
                             <div className="w-8 h-8 rounded-full bg-tempo-red shadow-inner"></div>
@@ -1183,14 +1154,14 @@ end $$;
             const [selectedDate, setSelectedDate] = useState(getTodayISO());
             const [selectedMeetingId, setSelectedMeetingId] = useState(null);
             const [syncRange, setSyncRange] = useState('upcoming'); 
-            const [taskFilter, setTaskFilter] = useState('pending'); // Default to pending 
+            const [taskFilter, setTaskFilter] = useState('pending');  
             const [taskScope, setTaskScope] = useState('me'); 
-            const [meetingScope, setMeetingScope] = useState('me'); // Added Meeting Scope
+            const [meetingScope, setMeetingScope] = useState('me'); 
             const [showQuickAdd, setShowQuickAdd] = useState(false); 
-            const [showPast, setShowPast] = useState(false); // New state for toggling past meetings
+            const [showPast, setShowPast] = useState(false); 
             const [lastSynced, setLastSynced] = useState(null);
             
-            const [gcalSyncStatus, setGcalSyncStatus] = useState('idle'); // 'idle', 'syncing', 'live', 'stale'
+            const [gcalSyncStatus, setGcalSyncStatus] = useState('idle'); 
             const meetingsRef = useRef([]);
             const lastGcalSyncRef = useRef(null);
 
@@ -1248,18 +1219,13 @@ end $$;
                 }, 5000);
             }, []);
 
-            // --- UNIFIED ASSIGNEE MAPPING ---
-            // This safely maps the legacy user IDs (UUID) to the team_members email
-            // guaranteeing 1 clean object per user, regardless of how they are assigned.
             const allPossibleAssignees = useMemo(() => {
                 const uniqueByEmail = new Map();
                 
-                // 1. Team Members (Base truth)
                 teamMembers.forEach(tm => {
                     if (tm.email) uniqueByEmail.set(tm.email.toLowerCase(), { ...tm });
                 });
 
-                // 2. Colleagues (Found in meetings)
                 colleagues.forEach(c => {
                     if (c.email) {
                         const key = c.email.toLowerCase();
@@ -1267,12 +1233,11 @@ end $$;
                     }
                 });
 
-                // 3. Current User (Crucial: Merges Auth UUID into the email object so legacy tasks resolve properly)
                 if (currentUser && currentUser.email) {
                     const key = currentUser.email.toLowerCase();
                     if (uniqueByEmail.has(key)) {
                         const existing = uniqueByEmail.get(key);
-                        existing.id = currentUser.id; // Store UUID for reverse-lookup compatibility
+                        existing.id = currentUser.id; 
                         existing.name = currentUser.name || existing.name;
                         uniqueByEmail.set(key, existing);
                     } else {
@@ -1291,7 +1256,6 @@ end $$;
                 }
             }, []);
 
-            // Deep Linking for Meetings
             useEffect(() => {
                 const params = new URLSearchParams(window.location.search);
                 const mId = params.get('meetingId');
@@ -1300,21 +1264,18 @@ end $$;
                     if (target) {
                         setSelectedMeetingId(mId);
                         setView('meeting');
-                        // Clean URL without reload
                         window.history.replaceState({}, document.title, window.location.pathname);
                     }
                 }
             }, [meetings]);
 
-            // Helper to ensure we use the state client
             const client = supabaseClient; 
 
-            // -- DEBOUNCED FETCH FOR REALTIME SPAM PREVENTION --
             const triggerBackgroundFetch = useCallback(() => {
                 if (fetchTimeoutRef.current) clearTimeout(fetchTimeoutRef.current);
                 fetchTimeoutRef.current = setTimeout(() => {
                     fetchData(supabaseClient, true);
-                }, 2000); // 2 second debounce for realtime event bursts
+                }, 2000); 
             }, [supabaseClient]);
 
             useEffect(() => {
@@ -1344,7 +1305,6 @@ end $$;
                         const role = getSystemRole(session.user.email);
                         setCurrentUser({ id: session.user.id, name: session.user.user_metadata.full_name || session.user.email, email: session.user.email, system_role: role, avatar: (session.user.user_metadata.full_name || 'U').substring(0, 2).toUpperCase(), color: 'bg-indigo-600' });
                         
-                        // Prevent fetching loop by ensuring it's an actionable startup/auth event
                         if (event === 'INITIAL_SESSION' || event === 'SIGNED_IN') {
                             fetchData(supabaseClient);
                         }
@@ -1355,7 +1315,6 @@ end $$;
                 return () => subscription.unsubscribe();
             }, [supabaseClient]);
 
-            // -- EMAIL QUEUE HELPER --
             const queueEmail = async (to, subject, body) => {
                 if (!client || dbStatus !== 'connected' || !to) return;
                 await client.from('pending_emails').insert({
@@ -1366,20 +1325,16 @@ end $$;
                 });
             };
 
-            // --- BATCH NOTIFICATION LOGIC ---
-            
-            // 1. Flush Assignments (Group by Assignee -> Meeting)
             const flushAssignmentNotifications = useCallback(async () => {
                 if (assignmentBuffer.current.length === 0) return;
                 const tasksToProcess = [...assignmentBuffer.current];
-                assignmentBuffer.current = []; // Clear buffer
+                assignmentBuffer.current = []; 
 
-                // Group by Assignee Email
                 const tasksByAssignee = {};
                 for (const item of tasksToProcess) {
                     const { task, meetingTitle, meetingId } = item;
                     const assigneeId = task.assignee;
-                    if (!assigneeId || assigneeId === currentUser?.id || assigneeId === currentUser?.email) continue; // Skip self
+                    if (!assigneeId || assigneeId === currentUser?.id || assigneeId === currentUser?.email) continue; 
 
                     const user = allPossibleAssignees.find(u => u.email === assigneeId || u.id === assigneeId);
                     const email = user ? user.email : (assigneeId.includes('@') ? assigneeId : null);
@@ -1390,12 +1345,10 @@ end $$;
                     }
                 }
 
-                // Send Emails
                 for (const [email, tasks] of Object.entries(tasksByAssignee)) {
                     const name = tasks[0].assigneeName;
                     const count = tasks.length;
                     
-                    // Group by meeting inside the email if needed
                     const meetingsMap = {};
                     tasks.forEach(t => {
                         const mId = t.meetingId || 'standalone';
@@ -1410,7 +1363,6 @@ end $$;
                         data.tasks.forEach(t => {
                             body += `[ ] ${t.text} (Due: ${t.end_date || 'No Date'})\n`;
                         });
-                        // Add Link
                         const link = `${window.location.origin}${window.location.pathname}?meetingId=${mId}`;
                         body += `View Meeting: ${link}\n\n`;
                     });
@@ -1425,13 +1377,11 @@ end $$;
                 }
             }, [client, allPossibleAssignees, currentUser]);
 
-            // 2. Flush Completions (Group by Manager AND Assigner)
             const flushCompletionNotifications = useCallback(async () => {
                 if (completionBuffer.current.length === 0) return;
                 const tasksToProcess = [...completionBuffer.current];
                 completionBuffer.current = [];
 
-                // Find manager for each task assignee and group
                 const notificationsByEmail = {};
 
                 for (const item of tasksToProcess) {
@@ -1440,7 +1390,6 @@ end $$;
                     const assignerId = task.assigner;
                     const assigneeUser = allPossibleAssignees.find(m => m.email === assigneeId || m.id === assigneeId);
 
-                    // 1. Notify Manager
                     if (assigneeUser && assigneeUser.team) {
                         const manager = allPossibleAssignees.find(m => (m.team === assigneeUser.team && m.role === 'Owner') || (m.managed_teams && m.managed_teams.includes(assigneeUser.team)));
                         if (manager && manager.email) {
@@ -1449,12 +1398,11 @@ end $$;
                         }
                     }
 
-                    // 2. Notify Assigner (if different from manager and not self)
                     if (assignerId && assignerId !== assigneeId) {
                         const assignerUser = allPossibleAssignees.find(m => m.email === assignerId || m.id === assignerId);
                         const assignerEmail = assignerUser ? assignerUser.email : (assignerId.includes('@') ? assignerId : null);
                         
-                        if (assignerEmail && !notificationsByEmail[assignerEmail]) { // Don't duplicate if assigner IS manager
+                        if (assignerEmail && !notificationsByEmail[assignerEmail]) { 
                              if (!notificationsByEmail[assignerEmail]) notificationsByEmail[assignerEmail] = { name: assignerUser?.name || 'Assigner', items: [], type: 'assigner' };
                              notificationsByEmail[assignerEmail].items.push({ task, doer: assigneeUser?.name || 'Assignee', meetingTitle });
                         } else if (assignerEmail && notificationsByEmail[assignerEmail]) {
@@ -1464,7 +1412,6 @@ end $$;
                     }
                 }
 
-                // Send Emails
                 for (const [email, data] of Object.entries(notificationsByEmail)) {
                     const count = data.items.length;
                     let body = `Hi ${data.name},\n\n${count} action item(s) have been marked complete:\n\n`;
@@ -1480,26 +1427,18 @@ end $$;
                 }
             }, [client, allPossibleAssignees]);
 
-
-            // -- TRIGGERS --
-
-            // Trigger for New Tasks (Buffered)
             const scheduleAssignmentNotification = (task, meetingTitle, meetingId) => {
                 assignmentBuffer.current.push({ task, meetingTitle, meetingId });
                 if (assignmentTimeout.current) clearTimeout(assignmentTimeout.current);
-                // Wait 10 seconds to collect batch
                 assignmentTimeout.current = setTimeout(flushAssignmentNotifications, 10000); 
             };
 
-            // Trigger for Completed Tasks (Buffered)
             const scheduleCompletionNotification = (task, meetingTitle) => {
                 completionBuffer.current.push({ task, meetingTitle });
                 if (completionTimeout.current) clearTimeout(completionTimeout.current);
-                // Wait 60 seconds to collect multiple check-offs
                 completionTimeout.current = setTimeout(flushCompletionNotifications, 60000);
             };
 
-            // --- REAL-TIME GOOGLE CALENDAR SYNC (INCREMENTAL POLLING) ---
             const performIncrementalSync = useCallback(async () => {
                 if (!session?.provider_token || !client) return;
                 setGcalSyncStatus('syncing');
@@ -1508,10 +1447,8 @@ end $$;
                     let fetchUrl = '';
 
                     if (lastGcalSyncRef.current) {
-                        // Polling: Only get events modified since the last check
                         fetchUrl = `https://www.googleapis.com/calendar/v3/calendars/primary/events?updatedMin=${lastGcalSyncRef.current}&singleEvents=true&maxResults=2500&_${cacheBuster}`;
                     } else {
-                        // Initial Load: Get all events occurring from 30 days ago into the future
                         const timeMinIso = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
                         fetchUrl = `https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${timeMinIso}&orderBy=startTime&singleEvents=true&maxResults=2500&_${cacheBuster}`;
                     }
@@ -1536,7 +1473,6 @@ end $$;
                     const taskBatch = [];
                     
                     for (const event of data.items) {
-                        // Handle Deleted / Cancelled events
                         if (event.status === 'cancelled') {
                             const existing = meetingsRef.current.find(m => m.id === event.id);
                             if (existing) {
@@ -1547,7 +1483,6 @@ end $$;
                             continue;
                         }
                         
-                        // Parse updated dates
                         let dateStr, timeStr;
                         if (event.start.date) {
                             dateStr = event.start.date;
@@ -1560,7 +1495,6 @@ end $$;
                             timeStr = start.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
                         }
                         
-                        // Detect and Log Specific Changes
                         const existingMtg = meetingsRef.current.find(m => m.id === event.id);
                         if (existingMtg) {
                             if (existingMtg.date !== dateStr || existingMtg.time !== timeStr) {
@@ -1568,12 +1502,10 @@ end $$;
                                 changesDetected = true;
                             }
                         } else if (lastGcalSyncRef.current !== null) {
-                             // Only notify of "New Events" if this isn't the very first blind load
                              showToast(`New Event: "${event.summary || 'Meeting'}" added to your calendar.`);
                              changesDetected = true;
                         }
 
-                        // Prepare Batch Payload
                         const attendeesList = event.attendees ? event.attendees.map(a => ({ id: a.email, email: a.email, name: a.displayName || a.email.split('@')[0], avatar: (a.displayName || a.email).substring(0,2).toUpperCase() })) : [];
                         const safeAttendees = attendeesList.map(a => JSON.parse(JSON.stringify(a)));
                         const userInAttendees = safeAttendees.find(a => a.email && a.email.toLowerCase() === currentUser?.email?.toLowerCase());
@@ -1596,7 +1528,6 @@ end $$;
                             video_link: videoLink 
                         });
                         
-                        // Auto-extract tasks on the fly
                         const description = event.description || '';
                         const taskRegex = /(?:^|\n)(?:-? ?\[ ?\]|TODO:|Task:)\s*(.+)/gi;
                         let match;
@@ -1617,7 +1548,7 @@ end $$;
                         await client.from('tasks').upsert(taskBatch, { ignoreDuplicates: true });
                     }
 
-                    if (changesDetected) triggerBackgroundFetch(); // Soft refresh UI
+                    if (changesDetected) triggerBackgroundFetch(); 
 
                     lastGcalSyncRef.current = new Date().toISOString();
                     setGcalSyncStatus('live');
@@ -1627,35 +1558,29 @@ end $$;
                 }
             }, [session?.provider_token, client, showToast, triggerBackgroundFetch, currentUser]);
 
-            // Lifecycle: Start Real-Time Background Polling
             useEffect(() => {
                 if (!session?.provider_token) {
                     setGcalSyncStatus('idle');
                     return;
                 }
                 
-                // 1. Immediate sync on session load
                 performIncrementalSync();
                 
-                // 2. Continuous 60s Polling
                 const intervalId = setInterval(performIncrementalSync, 60000);
                 
                 return () => clearInterval(intervalId);
             }, [session?.provider_token, performIncrementalSync]);
 
-            // DISTRIBUTED CRON: Grouped Daily Check & Reminders
             const checkAndSendReminders = async (currentTasks, allAssignees) => {
                 if (!client) return;
                 const todayStr = getTodayISO();
 
-                // 1. Identify tasks needing a daily reminder
                 const tasksNeedingReminder = currentTasks.filter(t => {
                     return !t.done && t.status !== 'completed' && !t.deleted && t.last_reminded_date !== todayStr;
                 });
 
                 if (tasksNeedingReminder.length === 0) return;
 
-                // 2. Group tasks by assignee email to avoid email spam
                 const notificationsByEmail = {};
                 for (const task of tasksNeedingReminder) {
                     const assigneeId = task.assignee;
@@ -1673,7 +1598,6 @@ end $$;
                     }
                 }
 
-                // 3. Queue digest emails & Update the DB
                 for (const [email, data] of Object.entries(notificationsByEmail)) {
                     const count = data.tasks.length;
                     let body = `Hi ${data.name},\n\nHere is your daily reminder for your unresolved action item(s):\n\n`;
@@ -1685,10 +1609,8 @@ end $$;
                     const link = `${window.location.origin}${window.location.pathname}`;
                     body += `\nView Dashboard: ${link}\n\n- TEMPO`;
 
-                    // Push email to queue
                     await queueEmail(email, `Daily Reminder: ${count} Pending Task(s)`, body);
 
-                    // Flag as reminded today
                     const taskIds = data.tasks.map(t => t.id);
                     await client.from('tasks').update({ last_reminded_date: todayStr }).in('id', taskIds);
                 }
@@ -1701,7 +1623,6 @@ end $$;
                     const { error: checkError } = await sbClient.from('meetings').select('id').limit(1);
                     if (checkError && (checkError.code === 'PGRST205' || checkError.code === '42P01')) throw { code: 'TABLE_MISSING' };
 
-                    // Fetch large range to prevent truncation of new items
                     const { data: m, error: mErr } = await sbClient.from('meetings').select('*').range(0, 9999);
                     const { data: t, error: tErr } = await sbClient.from('tasks').select('*').range(0, 9999);
                     const { data: tm, error: tmErr } = await sbClient.from('team_members').select('*');
@@ -1723,7 +1644,6 @@ end $$;
                     setColleagues(colleaguesList);
                     setMeetings(parsedM); setTasks(parsedT); setDbStatus(parsedM.length ? 'connected' : 'empty');
 
-                    // Check and trigger daily recurring reminders (Distributed Cron)
                     checkAndSendReminders(parsedT, [...parsedTeam, ...colleaguesList, ...(currentUser ? [currentUser] : [])]);
                 } catch (err) {
                     if (err.code === 'TABLE_MISSING') setDbStatus('setup_required'); else { console.error("fetchData caught error:", err); setDbStatus('error'); setErrorMsg(err.message); }
@@ -1734,8 +1654,6 @@ end $$;
             useEffect(() => {
                 if (!supabaseClient || !userId) return;
 
-                // WebSockets are blocked in this environment.
-                // Fallback: Poll the database every 30 seconds for external updates.
                 const intervalId = setInterval(() => {
                     triggerBackgroundFetch();
                 }, 30000);
@@ -1750,7 +1668,6 @@ end $$;
                 setIsSyncing(true);
                 
                 try {
-                    // Start sync from 5 YEARS AGO to ensure retrievable history as requested
                     let timeMin = new Date();
                     timeMin.setFullYear(timeMin.getFullYear() - 5); 
                     timeMin.setHours(0,0,0,0);
@@ -1791,7 +1708,6 @@ end $$;
                         const mId = event.id;
                         const docId = `doc_${event.id}`;
                         
-                        // FIX: Improved Date Handling
                         let dateStr, timeStr;
                         
                         if (event.start.date) {
@@ -1812,7 +1728,6 @@ end $$;
                             const taskText = match[1].trim();
                             if (taskText) {
                                 const taskId = `t_${event.id}_${taskText.substring(0, 5).replace(/\s/g, '')}`;
-                                // Note: We now consistently use email for unified assignment mapping!
                                 taskBatch.push({ id: taskId, meeting_id: mId, text: taskText, assignee: currentUser.email, status: 'pending', deleted: false, last_reminded_date: getTodayISO() });
                             }
                         }
@@ -1850,7 +1765,6 @@ end $$;
                         }
                     }
                     
-                    // BATCH OPS
                     if (client) {
                         if (meetingBatch.length > 0) {
                             const { error } = await client.from('meetings').upsert(meetingBatch);
@@ -1862,13 +1776,10 @@ end $$;
                             }
                         }
                         if (taskBatch.length > 0) {
-                            const { error } = await client.from('tasks').upsert(taskBatch, { ignoreDuplicates: false }); // Allow updates to flip 'deleted' back to false
+                            const { error } = await client.from('tasks').upsert(taskBatch, { ignoreDuplicates: false }); 
                             if (error) console.error("Task sync error (non-fatal):", error);
                         }
                     }
-
-                    // --- STALE DATA CLEANUP REMOVED COMPLETELY ---
-                    // This ensures no task/meeting is ever deleted automatically during sync.
 
                     setMeetings([]); 
                     await fetchData(client);
@@ -1896,7 +1807,6 @@ end $$;
                     if (!resp.ok) { const err = await resp.json(); throw new Error(err.error?.message || "Failed to fetch Doc"); }
                     const docData = await resp.json();
                     
-                    // --- HELPERS ---
                     const flattenDoc = (content) => {
                         let nodes = [];
                         if (!content) return nodes;
@@ -1941,10 +1851,8 @@ end $$;
                         return null;
                     };
 
-                    // --- EXECUTION ---
                     const flatNodes = flattenDoc(docData.body?.content);
                     
-                    // Improved Regex for Date Headers (handles 10.15.2023, 10/15, October 15, etc.)
                     const dateRegex = /\b(?:\d{4}[-\/.]\d{1,2}[-\/.]\d{1,2}|\d{1,2}[-\/.]\d{1,2}(?:[-\/.]\d{2,4})?|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s\d{1,2}(?:st|nd|rd|th)?(?:,?\s\d{2,4})?)\b/i;
                     
                     const meetingHeaders = [];
@@ -1952,17 +1860,14 @@ end $$;
                         const txt = node.elements?.map(e => e.textRun?.content || '').join('').trim();
                         if (!txt) return;
                         
-                        // Exclude lines that are clearly bullets or checkboxes from being considered date headers
                         if (node.bullet) return;
                         if (/^(\[ ?[xX]? ?\]|\( ?[xX]? ?\)|\u2610|\u2611)/i.test(txt)) return;
                         
                         const dateMatch = txt.match(dateRegex);
                         if (dateMatch && txt.length < 150) {
-                            // Timezone-safe parse
                             const ts = Date.parse(dateMatch[0]);
                             if (!isNaN(ts)) {
                                 const d = new Date(ts);
-                                // Sanity check to avoid parsing random numbers as ancient/future dates
                                 if (d.getFullYear() > 2000 && d.getFullYear() < 2100) {
                                     const offset = d.getTimezoneOffset() * 60000;
                                     const localIso = new Date(d.getTime() - offset).toISOString().split('T')[0];
@@ -1976,10 +1881,7 @@ end $$;
                         }
                     });
 
-                    // IDENTIFY THE FIRST DATE HEADER IN THE DOCUMENT
                     let targetHeader = meetingHeaders.length > 0 ? meetingHeaders[0] : null;
-
-                    // EXTRACT ONLY FROM THIS FIRST DATE HEADER FORWARD
                     let startIndex = targetHeader ? targetHeader.index + 1 : 0;
 
                     const scanNodesForTasks = (startIdx) => {
@@ -1989,7 +1891,6 @@ end $$;
                         for (let i = startIdx; i < flatNodes.length; i++) {
                             const paraNode = flatNodes[i];
                             
-                            // 1. Stop processing immediately when a horizontal divider appears
                             const hasHorizontalRule = paraNode.elements?.some(e => e.horizontalRule);
                             if (hasHorizontalRule) {
                                 console.log("Found horizontal divider, stopping extraction.");
@@ -2006,7 +1907,6 @@ end $$;
                             let rawText = paraText.replace(/\u00A0/g, ' ').trim();
                             if (!rawText) continue;
 
-                            // 2. Stop processing immediately when another date header appears
                             if (targetHeader) {
                                 const thisHeader = meetingHeaders.find(h => h.index === i);
                                 if (thisHeader && thisHeader.index !== targetHeader.index) {
@@ -2017,24 +1917,19 @@ end $$;
 
                             if (/^(attendees|participants|guests|cc|to):/i.test(rawText)) continue;
 
-                            // Mark when we enter the "Action items" section
                             if (/^(action items|next steps|to do|tasks)(:| -)?/i.test(rawText)) {
                                 inActionItems = true;
                                 continue;
                             } else if (/^[a-zA-Z0-9\s]+(:| -)$/i.test(rawText) && rawText.length < 25) {
-                                // Exiting action items section if we hit a new generic heading
                                 inActionItems = false;
                             }
 
-                            // 3. Only extract items listed under "Action items"
                             if (inActionItems) {
                                 const manualCheckboxRegex = /^(\[ ?[xX]? ?\]|\( ?[xX]? ?\)|\u2610|\u2611|\u2714|-|\u25CF)\s*/i;
                                 let cleanText = rawText.replace(manualCheckboxRegex, '').trim();
 
                                 if (cleanText.length > 2) {
                                     const assignedTo = findUserInText(cleanText, richElements);
-                                    // 4. Only extract lines that contain an assigned owner
-                                    // Tasks without an assigned owner or generic commentary are naturally skipped since assignedTo is null.
                                     if (assignedTo) {
                                         const assignedUser = allPossibleAssignees.find(u => (u.id === assignedTo || u.email === assignedTo));
                                         if (assignedUser && assignedUser.name) {
@@ -2069,14 +1964,12 @@ end $$;
                              if (existingTexts.has(normalizedText)) continue;
 
                              const taskId = `t_doc_${Date.now()}_${Math.floor(Math.random()*10000)}`;
-                             // Uses email for assigner mapping consistency
                              const newTaskObj = { id: taskId, meeting_id: meeting.id, text: task.text, assignee: task.assignee, assigner: currentUser.email, status: 'pending', start_date: taskStartDate, end_date: null, deleted: false, last_reminded_date: getTodayISO() };
                              
-                             setTasks(prev => [...prev, { ...newTaskObj, meetingId: meeting.id }]); // update local
+                             setTasks(prev => [...prev, { ...newTaskObj, meetingId: meeting.id }]); 
                              
                              if (client) { 
                                  await client.from('tasks').insert(newTaskObj); 
-                                 // BUFFERED Notification
                                  scheduleAssignmentNotification(newTaskObj, meeting.title, meeting.id);
                              }
                              
@@ -2112,7 +2005,6 @@ end $$;
                 const task = tasks.find(t => t.id === taskId);
                 const meeting = meetings.find(m => m.id === task?.meetingId);
                 
-                // Save previous state for potential undo
                 const prevStatus = task?.status;
                 const prevDone = task?.done;
 
@@ -2120,7 +2012,6 @@ end $$;
                 if (dbStatus === 'connected' && client) { 
                     await client.from('tasks').update(updates).eq('id', taskId); 
                     
-                    // COMPLETION NOTIFICATION & UNDO
                     if (updates.status === 'completed' || updates.done === true) {
                         if (task && prevStatus !== 'completed' && !prevDone) {
                             scheduleCompletionNotification({ ...task, ...updates }, meeting?.title || 'Unknown Meeting');
@@ -2143,7 +2034,6 @@ end $$;
             const handleAddStandaloneTask = (text, assigneeId, start, end) => {
                 if (!text.trim()) return;
                 const newId = `t_${Date.now()}`;
-                // Now enforcing email for assignment keys
                 const newTask = { id: newId, meeting_id: 'standalone', text: text, assignee: assigneeId || currentUser.email, assigner: currentUser.email, status: 'pending', start_date: start || getTodayISO(), end_date: end || getTodayISO(), deleted: false, last_reminded_date: getTodayISO() };
                 
                 setTasks(prev => [newTask, ...prev]);
@@ -2153,7 +2043,7 @@ end $$;
                             console.error("Task Insert Error (Personal):", error);
                             showToast("Failed to save task. Database schema might be outdated. Please run the SQL Setup script again.");
                         }
-                        else scheduleAssignmentNotification(newTask, 'Personal Task', 'standalone'); // BUFFERED
+                        else scheduleAssignmentNotification(newTask, 'Personal Task', 'standalone'); 
                     }); 
                 }
                 setShowQuickAdd(false);
@@ -2190,7 +2080,7 @@ end $$;
                             if (error) {
                                 console.error(error);
                                 showToast("Failed to delete from database: " + error.message);
-                                fetchData(client); // restore
+                                fetchData(client); 
                             } else {
                                 showToast("All tasks deleted successfully.");
                             }
@@ -2199,7 +2089,6 @@ end $$;
                 });
             };
             
-            // --- AUTH HANDLERS RESTORED ---
             const handleGoogleLogin = async () => { if (!client) return; const { error } = await client.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: window.location.href, scopes: 'https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/documents.readonly', queryParams: { prompt: 'consent', access_type: 'offline' } } }); if (error) showToast(error.message); };
             const handleEmailLogin = async (email) => { if (!client) return; const { error } = await client.auth.signInWithOtp({ email, options: { emailRedirectTo: window.location.href } }); if (error) showToast(error.message); };
             const handlePasswordLogin = async (email, password) => { if (!client) return; const { error } = await client.auth.signInWithPassword({ email, password }); if (error) showToast(error.message); };
@@ -2225,7 +2114,6 @@ end $$;
                     }
                 });
             };
-            // --- END AUTH HANDLERS ---
 
             const isManager = useMemo(() => {
                 if (!currentUser) return false;
@@ -2279,12 +2167,10 @@ end $$;
                     });
                 }
 
-                // Filtering Logic Update: Handle "Show Past"
                 let dateFiltered;
                 if (selectedDate) {
                     dateFiltered = relevantMeetings.filter(m => m.date === selectedDate);
                 } else {
-                    // If showing all, filter based on showPast toggle
                     if (showPast) {
                         dateFiltered = relevantMeetings;
                     } else {
@@ -2309,7 +2195,6 @@ end $$;
                     const myId = currentUser?.id;
                     scopeFiltered = tasks.filter(t => { const assignee = (t.assignee || '').toLowerCase().trim(); return assignee === myId || assignee === myEmail; }); 
                 } else if (effectiveScope === 'assigned_by_me') {
-                    // Filter: Assignee is NOT me, but Assigner IS me
                     const myId = currentUser?.id;
                     const myEmail = currentUser?.email;
                     scopeFiltered = tasks.filter(t => {
@@ -2344,12 +2229,10 @@ end $$;
                     });
                 }
                 
-                // Ensure Trash filter handles its scope logically
                 if (taskFilter === 'trash') {
                     return scopeFiltered.filter(t => t.deleted);
                 }
 
-                // Filter out deleted tasks for normal views
                 scopeFiltered = scopeFiltered.filter(t => !t.deleted);
 
                 if (taskFilter === 'all') return scopeFiltered;
@@ -2358,7 +2241,6 @@ end $$;
                 return scopeFiltered;
             }, [tasks, taskFilter, taskScope, currentUser, teamMembers, session, isManager]);
 
-            // Meeting Aggregation logic for the individual meeting view
             const currentMeetingForView = meetings.find(x => x.id === selectedMeetingId);
             const aggregatedMeetingTasks = currentMeetingForView 
                 ? tasks.filter(t => {
@@ -2419,7 +2301,6 @@ end $$;
                                                     {isManager && <button onClick={() => setTaskScope('team')} className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${taskScope === 'team' && taskFilter !== 'trash' ? 'bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-gray-100' : 'text-gray-500 dark:text-gray-400'}`} disabled={taskFilter === 'trash'}>My Team</button>}
                                                 </div>
                                                 
-                                                {/* ADMIN DELETE BUTTON */}
                                                 {currentUser.system_role === 'admin' && (
                                                     <button 
                                                         onClick={handleDeleteAllTasks} 
