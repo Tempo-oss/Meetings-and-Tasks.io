@@ -1413,15 +1413,17 @@ end $$;
                         }
                         
                         let dateStr, timeStr;
-                        if (event.start.date) {
+                        if (event.start?.date) {
                             dateStr = event.start.date;
                             timeStr = 'All Day';
-                        } else {
+                        } else if (event.start?.dateTime) {
                             const start = new Date(event.start.dateTime);
                             const offset = start.getTimezoneOffset() * 60000;
                             const localDate = new Date(start.getTime() - offset);
                             dateStr = localDate.toISOString().split('T')[0];
                             timeStr = start.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                        } else {
+                            continue; // Skip invalid events with no start
                         }
                         
                         const existingMtg = meetingsRef.current.find(m => m.id === event.id);
@@ -1435,7 +1437,12 @@ end $$;
                              changesDetected = true;
                         }
 
-                        const attendeesList = event.attendees ? event.attendees.map(a => ({ id: a.email, email: a.email, name: a.displayName || a.email.split('@')[0], avatar: (a.displayName || a.email).substring(0,2).toUpperCase() })) : [];
+                        const attendeesList = event.attendees ? event.attendees.map(a => {
+                            const email = a.email || '';
+                            const name = a.displayName || email.split('@')[0] || 'Unknown';
+                            return { id: email, email: email, name: name, avatar: name.substring(0,2).toUpperCase() };
+                        }) : [];
+                        
                         const safeAttendees = attendeesList.map(a => JSON.parse(JSON.stringify(a)));
                         const userInAttendees = safeAttendees.find(a => a.email && a.email.toLowerCase() === currentUser?.email?.toLowerCase());
                         if (!userInAttendees && currentUser) safeAttendees.push({ id: currentUser.id, email: currentUser.email, name: currentUser.name, avatar: currentUser.avatar });
@@ -1667,15 +1674,17 @@ end $$;
                         
                         let dateStr, timeStr;
                         
-                        if (event.start.date) {
+                        if (event.start?.date) {
                             dateStr = event.start.date;
                             timeStr = 'All Day';
-                        } else {
+                        } else if (event.start?.dateTime) {
                             const start = new Date(event.start.dateTime);
                             const offset = start.getTimezoneOffset() * 60000;
                             const localDate = new Date(start.getTime() - offset);
                             dateStr = localDate.toISOString().split('T')[0];
                             timeStr = start.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                        } else {
+                            continue; // Skip invalid events with no start
                         }
                         
                         const description = event.description || '';
@@ -1689,7 +1698,12 @@ end $$;
                             }
                         }
 
-                        const attendees = event.attendees ? event.attendees.map(a => ({ id: a.email, email: a.email, name: a.displayName || a.email.split('@')[0], avatar: (a.displayName || a.email).substring(0,2).toUpperCase() })) : [];
+                        const attendees = event.attendees ? event.attendees.map(a => {
+                            const email = a.email || '';
+                            const name = a.displayName || email.split('@')[0] || 'Unknown';
+                            return { id: email, email: email, name: name, avatar: name.substring(0,2).toUpperCase() };
+                        }) : [];
+                        
                         const safeAttendees = attendees.map(a => JSON.parse(JSON.stringify(a)));
                         
                         const userInAttendees = safeAttendees.find(a => a.email && a.email.toLowerCase() === currentUser.email.toLowerCase());
@@ -1738,14 +1752,14 @@ end $$;
                         }
                     }
 
-                    setMeetings([]); 
-                    await fetchData(client, false, true); // <--- Disable reminders on manual sync
+                    await fetchData(client, false, true); // <--- Disabled setMeetings([])
                     setLastSynced(new Date().toLocaleTimeString());
                     lastGcalSyncRef.current = syncStartTime;
                     setGcalSyncStatus('live');
                     
                 } catch (e) { 
                     console.error("Sync failed:", e);
+                    showToast("Google Sync Error: " + e.message);
                     setGcalSyncStatus('stale');
                 } finally { 
                     setIsSyncing(false); 
