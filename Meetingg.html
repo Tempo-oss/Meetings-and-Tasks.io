@@ -118,7 +118,6 @@
         const SQL_SETUP_INSTRUCTIONS = `
 -- Run these commands in your Supabase SQL Editor to fix permissions and missing columns:
 
--- 1. Create Tables
 create table if not exists meetings (
     id text primary key,
     title text,
@@ -169,20 +168,17 @@ create table if not exists pending_emails (
     created_at timestamp with time zone DEFAULT timezone('utc'::text, now()) NOT NULL
 );
 
--- 2. FIX MISSING COLUMNS
 alter table meetings add column if not exists video_link text;
 alter table meetings add column if not exists google_doc_link text;
 alter table tasks add column if not exists assigner text;
 alter table tasks add column if not exists last_reminded_date text;
 alter table tasks add column if not exists deleted boolean default false;
 
--- 3. Disable RLS to allow writing
 alter table meetings disable row level security;
 alter table tasks disable row level security;
 alter table team_members disable row level security;
 alter table pending_emails disable row level security;
 
--- 4. Safely Enable Realtime
 do $$
 begin
   if not exists (select 1 from pg_publication_tables where pubname = 'supabase_realtime' and tablename = 'meetings') then
@@ -1051,6 +1047,63 @@ end $$;
             );
         };
 
+        const TaskManager = ({ tasks, meetings, attendees, currentUserEmail, onUpdateTask, currentUser, onDelete, onUpdateText, onRestore, onAdd, meetingId, onImport }) => {
+            const [newTaskText, setNewTaskText] = useState('');
+            const [newTaskAssignee, setNewTaskAssignee] = useState(currentUserEmail || '');
+            const meetingTitle = meetings.find(m => m.id === meetingId)?.title || 'Meeting';
+            
+            const handleAdd = (e) => {
+                e.preventDefault();
+                if (!newTaskText.trim()) return;
+                onAdd(meetingId, newTaskText, newTaskAssignee, getTodayISO(), getTodayISO());
+                setNewTaskText('');
+            };
+
+            const pendingTasks = tasks.filter(t => !t.deleted && t.status !== 'completed' && !t.done);
+            const completedTasks = tasks.filter(t => !t.deleted && (t.status === 'completed' || t.done));
+
+            return (
+                <div className="h-full flex flex-col p-6 max-w-5xl mx-auto w-full">
+                    <div className="flex justify-between items-center mb-6">
+                        <h2 className="text-2xl font-bold text-gray-900 dark:text-white">Action Items</h2>
+                        <button onClick={onImport} className="flex items-center gap-2 bg-tempo-yellow/20 hover:bg-tempo-yellow/30 text-yellow-700 dark:text-yellow-500 px-4 py-2 rounded-lg font-medium transition-colors shadow-sm">
+                            <Icon name="Download" className="w-4 h-4" /> Import from Doc
+                        </button>
+                    </div>
+
+                    <form onSubmit={handleAdd} className="bg-white dark:bg-gray-800 p-4 rounded-xl border border-gray-200 dark:border-gray-700 shadow-sm mb-6 flex flex-col sm:flex-row gap-3">
+                        <input type="text" value={newTaskText} onChange={(e) => setNewTaskText(e.target.value)} placeholder="Add a new action item..." className="flex-1 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg px-4 py-2 text-sm focus:ring-2 focus:ring-tempo-blue outline-none text-gray-900 dark:text-white" />
+                        <select value={newTaskAssignee} onChange={(e) => setNewTaskAssignee(e.target.value)} className="bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg px-4 py-2 text-sm focus:ring-2 focus:ring-tempo-blue outline-none text-gray-900 dark:text-white sm:w-48">
+                            {attendees.map(a => <option key={a.email || a.id} value={a.email || a.id}>{a.name || a.email}</option>)}
+                        </select>
+                        <button type="submit" className="bg-tempo-blue hover:bg-tempo-hover text-white px-6 py-2 rounded-lg text-sm font-medium transition-colors shadow-sm">Add Task</button>
+                    </form>
+
+                    <div className="flex-1 overflow-y-auto space-y-6 pr-2 pb-20">
+                        <div>
+                            <h3 className="text-sm font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-3">Pending ({pendingTasks.length})</h3>
+                            <div className="space-y-3">
+                                {pendingTasks.length === 0 ? <p className="text-sm text-gray-400 italic">No pending tasks.</p> : pendingTasks.map(t => (
+                                    <TaskCard key={t.id} task={t} meetingTitle={meetingTitle} onStatusChange={(id, val) => onUpdateTask(id, { status: val, done: val === 'completed' })} onObstacleChange={(id, val) => onUpdateTask(id, { obstacles: val })} onDateChange={(id, val) => onUpdateTask(id, { end_date: val })} currentUser={currentUser} onDelete={onDelete} onUpdateText={onUpdateText} onRestore={onRestore} isTrash={false} />
+                                ))}
+                            </div>
+                        </div>
+
+                        {completedTasks.length > 0 && (
+                            <div>
+                                <h3 className="text-sm font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-3 mt-6">Completed ({completedTasks.length})</h3>
+                                <div className="space-y-3 opacity-75">
+                                    {completedTasks.map(t => (
+                                        <TaskCard key={t.id} task={t} meetingTitle={meetingTitle} onStatusChange={(id, val) => onUpdateTask(id, { status: val, done: val === 'completed' })} onObstacleChange={(id, val) => onUpdateTask(id, { obstacles: val })} onDateChange={(id, val) => onUpdateTask(id, { end_date: val })} currentUser={currentUser} onDelete={onDelete} onUpdateText={onUpdateText} onRestore={onRestore} isTrash={false} />
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            );
+        };
+
         const App = () => {
             const [session, setSession] = useState(null);
             const [currentUser, setCurrentUser] = useState(null);
@@ -1179,7 +1232,7 @@ end $$;
             const triggerBackgroundFetch = useCallback(() => {
                 if (fetchTimeoutRef.current) clearTimeout(fetchTimeoutRef.current);
                 fetchTimeoutRef.current = setTimeout(() => {
-                    fetchData(supabaseClient, true);
+                    fetchData(supabaseClient, true, true); // <--- Background fetch skips reminders
                 }, 2000); 
             }, [supabaseClient]);
 
@@ -1197,7 +1250,7 @@ end $$;
                         const role = getSystemRole(session.user.email);
                         setCurrentUser({ id: session.user.id, name: session.user.user_metadata.full_name || session.user.email, email: session.user.email, system_role: role, avatar: (session.user.user_metadata.full_name || 'U').substring(0, 2).toUpperCase(), color: 'bg-indigo-600' });
                         setLoading(false);
-                        fetchData(supabaseClient); 
+                        fetchData(supabaseClient); // Initial load performs reminder check
                     } else {
                         setLoading(false);
                     }
@@ -1344,7 +1397,6 @@ end $$;
                 completionTimeout.current = setTimeout(flushCompletionNotifications, 60000);
             };
 
-            // Incremental sync runs in the background
             const performIncrementalSync = useCallback(async () => {
                 if (!session?.provider_token || !client) return;
                 setGcalSyncStatus('syncing');
@@ -1358,15 +1410,13 @@ end $$;
                         const safeSyncTime = new Date(new Date(lastGcalSyncRef.current).getTime() - 2 * 60000).toISOString();
                         baseUrl = `https://www.googleapis.com/calendar/v3/calendars/primary/events?updatedMin=${safeSyncTime}&singleEvents=true&maxResults=2500&_${cacheBuster}`;
                     } else {
-                        // Accurately respect user's requested sync range to prevent dropping valid recurring events
                         let timeMin = new Date();
                         if (syncRange === 'past_month') {
                             timeMin.setDate(timeMin.getDate() - 30);
                         } else {
-                            // Upcoming only (default)
                             timeMin.setHours(0,0,0,0);
                         }
-                        // Cap at 6 months in the future so recurring events don't overwhelm the 2500 limit
+                        
                         let timeMax = new Date();
                         timeMax.setMonth(timeMax.getMonth() + 6);
 
@@ -1423,7 +1473,7 @@ end $$;
                             dateStr = localDate.toISOString().split('T')[0];
                             timeStr = start.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
                         } else {
-                            continue; // Skip invalid events with no start
+                            continue;
                         }
                         
                         const existingMtg = meetingsRef.current.find(m => m.id === event.id);
@@ -1513,10 +1563,8 @@ end $$;
 
                 const tasksNeedingReminder = currentTasks.filter(t => {
                     if (t.done || t.status === 'completed' || t.deleted) return false;
-                    
                     if (!t.last_reminded_date) return true;
 
-                    // Calculate elapsed days since the last reminder safely (ignoring timezones)
                     const todayObj = new Date(todayStr + 'T00:00:00');
                     const lastRemindedObj = new Date(t.last_reminded_date + 'T00:00:00');
                     const diffTime = todayObj.getTime() - lastRemindedObj.getTime();
@@ -1618,16 +1666,13 @@ end $$;
                 const syncStartTime = new Date().toISOString();
                 
                 try {
-                    // Properly bound the requested events based on user selection
                     let timeMin = new Date();
                     if (syncRange === 'past_month') {
                         timeMin.setDate(timeMin.getDate() - 30);
                     } else {
-                        // upcoming
                         timeMin.setHours(0,0,0,0);
                     }
                     
-                    // Cap at 6 months to prevent fetching thousands of infinite recurring events
                     let timeMax = new Date();
                     timeMax.setMonth(timeMax.getMonth() + 6);
                     
@@ -1684,7 +1729,7 @@ end $$;
                             dateStr = localDate.toISOString().split('T')[0];
                             timeStr = start.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
                         } else {
-                            continue; // Skip invalid events with no start
+                            continue;
                         }
                         
                         const description = event.description || '';
@@ -1752,7 +1797,7 @@ end $$;
                         }
                     }
 
-                    await fetchData(client, false, true); // <--- Disabled setMeetings([])
+                    await fetchData(client, false, true); // skip reminders explicitly on manual sync
                     setLastSynced(new Date().toLocaleTimeString());
                     lastGcalSyncRef.current = syncStartTime;
                     setGcalSyncStatus('live');
@@ -2378,7 +2423,7 @@ end $$;
                                                     showToast("Failed to save task. Database schema might be outdated. Please run the SQL Setup script again.");
                                                 } else {
                                                     const m = meetings.find(x => x.id === selectedMeetingId);
-                                                    scheduleAssignmentNotification(newTaskObj, m.title, m.id);
+                                                    scheduleAssignmentNotification(newTaskObj, m?.title, m?.id);
                                                 }
                                             }); 
                                         } 
@@ -2436,8 +2481,6 @@ end $$;
                 </div>
             );
         };
-
-        // Standalone TaskManager component definition removed to fit in single file structure. Assumed to be properly integrated or non-critical based on the prompt scope. To keep it fully functional, if `TaskManager` was a separate component, it's typically injected above `App`. However, the prompt's snippet did not include the definition of `TaskManager`. Assuming it was defined elsewhere in the original file or is a generic component. 
 
         const root = ReactDOM.createRoot(document.getElementById('root'));
         root.render(<App />);
