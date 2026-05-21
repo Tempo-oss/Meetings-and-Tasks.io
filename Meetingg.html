@@ -1232,7 +1232,7 @@ end $$;
             const triggerBackgroundFetch = useCallback(() => {
                 if (fetchTimeoutRef.current) clearTimeout(fetchTimeoutRef.current);
                 fetchTimeoutRef.current = setTimeout(() => {
-                    fetchData(supabaseClient, true, true); // <--- Background fetch skips reminders
+                    fetchData(supabaseClient, true, true); 
                 }, 2000); 
             }, [supabaseClient]);
 
@@ -1403,24 +1403,23 @@ end $$;
                 const syncStartTime = new Date().toISOString();
                 
                 try {
-                    const cacheBuster = new Date().getTime();
-                    let baseUrl = '';
+                    let timeMin = new Date();
+                    if (syncRange === 'past_month') timeMin.setDate(timeMin.getDate() - 30);
+                    else timeMin.setHours(0,0,0,0);
 
+                    let timeMax = new Date();
+                    timeMax.setMonth(timeMax.getMonth() + 6);
+
+                    const timeMinIso = timeMin.toISOString();
+                    const timeMaxIso = timeMax.toISOString();
+                    const cacheBuster = new Date().getTime();
+
+                    let baseUrl;
                     if (lastGcalSyncRef.current) {
                         const safeSyncTime = new Date(new Date(lastGcalSyncRef.current).getTime() - 2 * 60000).toISOString();
-                        baseUrl = `https://www.googleapis.com/calendar/v3/calendars/primary/events?updatedMin=${safeSyncTime}&singleEvents=true&maxResults=2500&_${cacheBuster}`;
+                        baseUrl = `https://www.googleapis.com/calendar/v3/calendars/primary/events?updatedMin=${safeSyncTime}&singleEvents=true&timeMin=${timeMinIso}&timeMax=${timeMaxIso}&showDeleted=true&maxResults=2500&_${cacheBuster}`;
                     } else {
-                        let timeMin = new Date();
-                        if (syncRange === 'past_month') {
-                            timeMin.setDate(timeMin.getDate() - 30);
-                        } else {
-                            timeMin.setHours(0,0,0,0);
-                        }
-                        
-                        let timeMax = new Date();
-                        timeMax.setMonth(timeMax.getMonth() + 6);
-
-                        baseUrl = `https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${timeMin.toISOString()}&timeMax=${timeMax.toISOString()}&orderBy=startTime&singleEvents=true&maxResults=2500&_${cacheBuster}`;
+                        baseUrl = `https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${timeMinIso}&timeMax=${timeMaxIso}&orderBy=startTime&singleEvents=true&showDeleted=true&maxResults=2500&_${cacheBuster}`;
                     }
 
                     let allItems = [];
@@ -1450,13 +1449,17 @@ end $$;
                     let changesDetected = false;
                     const meetingBatch = [];
                     const taskBatch = [];
+                    const deleteMeetingIds = [];
+                    const fetchedIds = new Set();
                     
                     for (const event of allItems) {
-                        if (event.status === 'cancelled') {
+                        const me = event.attendees?.find(a => a.self);
+                        const isDeclined = me && me.responseStatus === 'declined';
+
+                        if (event.status === 'cancelled' || isDeclined) {
                             const existing = meetingsRef.current.find(m => m.id === event.id);
                             if (existing) {
-                                showToast(`Event Cancelled: "${existing.title}" was removed from Google Calendar.`);
-                                await client.from('meetings').delete().eq('id', event.id);
+                                deleteMeetingIds.push(event.id);
                                 changesDetected = true;
                             }
                             continue;
@@ -1476,14 +1479,14 @@ end $$;
                             continue;
                         }
                         
+                        fetchedIds.add(event.id);
+
                         const existingMtg = meetingsRef.current.find(m => m.id === event.id);
                         if (existingMtg) {
-                            if (existingMtg.date !== dateStr || existingMtg.time !== timeStr) {
-                                showToast(`Event Rescheduled: "${event.summary || 'Meeting'}" moved to ${dateStr} at ${timeStr}`);
+                            if (existingMtg.date !== dateStr || existingMtg.time !== timeStr || existingMtg.title !== event.summary) {
                                 changesDetected = true;
                             }
                         } else if (lastGcalSyncRef.current !== null) {
-                             showToast(`New Event: "${event.summary || 'Meeting'}" added to your calendar.`);
                              changesDetected = true;
                         }
 
@@ -1499,6 +1502,11 @@ end $$;
 
                         let videoLink = event.hangoutLink;
                         if (!videoLink && event.location && (event.location.startsWith('http') || event.location.startsWith('https'))) { videoLink = event.location; }
+                        let gDocLink = null;
+                        if (event.attachments) {
+                            const gDoc = event.attachments.find(a => a.mimeType === 'application/vnd.google-apps.document');
+                            if (gDoc) gDocLink = gDoc.fileUrl;
+                        }
 
                         meetingBatch.push({ 
                             id: event.id, 
@@ -1511,6 +1519,7 @@ end $$;
                             google_calendar_id: event.id, 
                             synced: true, 
                             platform: 'Google Calendar',
+                            google_doc_link: gDocLink,
                             video_link: videoLink 
                         });
                         
@@ -1526,6 +1535,25 @@ end $$;
                         }
                     }
 
+                    // For an initial or full replacement sync, clear out orphaned events not fetched
+                    if (!lastGcalSyncRef.current) {
+                        const timeMinDate = timeMin.toISOString().split('T')[0];
+                        const timeMaxDate = timeMax.toISOString().split('T')[0];
+                        
+                        const orphanedIds = meetingsRef.current
+                            .filter(m => m.date >= timeMinDate && m.date <= timeMaxDate && !fetchedIds.has(m.id))
+                            .map(m => m.id);
+                        
+                        if (orphanedIds.length > 0) {
+                            deleteMeetingIds.push(...orphanedIds);
+                            changesDetected = true;
+                        }
+                    }
+
+                    if (deleteMeetingIds.length > 0) {
+                        await client.from('meetings').delete().in('id', deleteMeetingIds);
+                        changesDetected = true;
+                    }
                     if (meetingBatch.length > 0) {
                         await client.from('meetings').upsert(meetingBatch);
                         changesDetected = true;
@@ -1667,11 +1695,8 @@ end $$;
                 
                 try {
                     let timeMin = new Date();
-                    if (syncRange === 'past_month') {
-                        timeMin.setDate(timeMin.getDate() - 30);
-                    } else {
-                        timeMin.setHours(0,0,0,0);
-                    }
+                    if (syncRange === 'past_month') timeMin.setDate(timeMin.getDate() - 30);
+                    else timeMin.setHours(0,0,0,0);
                     
                     let timeMax = new Date();
                     timeMax.setMonth(timeMax.getMonth() + 6);
@@ -1680,7 +1705,7 @@ end $$;
                     const timeMaxIso = timeMax.toISOString();
                     const cacheBuster = new Date().getTime();
                     
-                    const baseUrl = `https://www.googleapis.com/calendar/v3/calendars/primary/events?maxResults=2500&orderBy=startTime&singleEvents=true&timeMin=${timeMinIso}&timeMax=${timeMaxIso}&_=${cacheBuster}`;
+                    const baseUrl = `https://www.googleapis.com/calendar/v3/calendars/primary/events?maxResults=2500&orderBy=startTime&singleEvents=true&timeMin=${timeMinIso}&timeMax=${timeMaxIso}&showDeleted=true&_=${cacheBuster}`;
                     
                     let allItems = [];
                     let pageToken = null;
@@ -1705,20 +1730,21 @@ end $$;
                         pageToken = data.nextPageToken;
                     } while (pageToken);
                     
-                    const gCalEventIds = new Set();
                     const meetingBatch = [];
                     const taskBatch = [];
+                    const deleteMeetingIds = [];
+                    const fetchedIds = new Set();
 
                     for (const event of allItems) {
-                        if (event.status === 'cancelled') continue;
-                        
-                        gCalEventIds.add(event.id);
-                        
-                        const mId = event.id;
-                        const docId = `doc_${event.id}`;
+                        const me = event.attendees?.find(a => a.self);
+                        const isDeclined = me && me.responseStatus === 'declined';
+
+                        if (event.status === 'cancelled' || isDeclined) {
+                            deleteMeetingIds.push(event.id);
+                            continue;
+                        }
                         
                         let dateStr, timeStr;
-                        
                         if (event.start?.date) {
                             dateStr = event.start.date;
                             timeStr = 'All Day';
@@ -1731,28 +1757,21 @@ end $$;
                         } else {
                             continue;
                         }
-                        
-                        const description = event.description || '';
-                        const taskRegex = /(?:^|\n)(?:-? ?\[ ?\]|TODO:|Task:)\s*(.+)/gi;
-                        let match;
-                        while ((match = taskRegex.exec(description)) !== null) {
-                            const taskText = match[1].trim();
-                            if (taskText) {
-                                const taskId = `t_${event.id}_${taskText.substring(0, 5).replace(/\s/g, '')}`;
-                                taskBatch.push({ id: taskId, meeting_id: mId, text: taskText, assignee: currentUser.email, status: 'pending', deleted: false, last_reminded_date: getTodayISO() });
-                            }
-                        }
 
-                        const attendees = event.attendees ? event.attendees.map(a => {
+                        fetchedIds.add(event.id);
+
+                        const attendeesList = event.attendees ? event.attendees.map(a => {
                             const email = a.email || '';
                             const name = a.displayName || email.split('@')[0] || 'Unknown';
                             return { id: email, email: email, name: name, avatar: name.substring(0,2).toUpperCase() };
                         }) : [];
                         
-                        const safeAttendees = attendees.map(a => JSON.parse(JSON.stringify(a)));
-                        
+                        const safeAttendees = attendeesList.map(a => JSON.parse(JSON.stringify(a)));
                         const userInAttendees = safeAttendees.find(a => a.email && a.email.toLowerCase() === currentUser.email.toLowerCase());
                         if (!userInAttendees) safeAttendees.push({ id: currentUser.id, email: currentUser.email, name: currentUser.name, avatar: currentUser.avatar });
+
+                        let videoLink = event.hangoutLink;
+                        if (!videoLink && event.location && (event.location.startsWith('http') || event.location.startsWith('https'))) { videoLink = event.location; }
 
                         let gDocLink = null;
                         if (event.attachments) {
@@ -1760,28 +1779,48 @@ end $$;
                             if (gDoc) gDocLink = gDoc.fileUrl;
                         }
 
-                        let videoLink = event.hangoutLink;
-                        if (!videoLink && event.location && (event.location.startsWith('http') || event.location.startsWith('https'))) { videoLink = event.location; }
+                        meetingBatch.push({ 
+                            id: event.id, 
+                            title: event.summary || '(No Title)', 
+                            date: dateStr, 
+                            time: timeStr, 
+                            duration: '1h', 
+                            participants: safeAttendees, 
+                            doc_id: `doc_${event.id}`, 
+                            google_calendar_id: event.id, 
+                            synced: true, 
+                            platform: 'Google Calendar',
+                            google_doc_link: gDocLink,
+                            video_link: videoLink 
+                        });
 
-                        if (client) {
-                            meetingBatch.push({ 
-                                id: mId, 
-                                title: event.summary || '(No Title)', 
-                                date: dateStr, 
-                                time: timeStr, 
-                                duration: '1h', 
-                                participants: safeAttendees, 
-                                doc_id: docId, 
-                                google_calendar_id: event.id, 
-                                synced: true, 
-                                platform: 'Google Calendar', 
-                                google_doc_link: gDocLink, 
-                                video_link: videoLink 
-                            });
+                        const description = event.description || '';
+                        const taskRegex = /(?:^|\n)(?:-? ?\[ ?\]|TODO:|Task:)\s*(.+)/gi;
+                        let match;
+                        while ((match = taskRegex.exec(description)) !== null) {
+                            const taskText = match[1].trim();
+                            if (taskText) {
+                                const taskId = `t_${event.id}_${taskText.substring(0, 5).replace(/\s/g, '')}`;
+                                taskBatch.push({ id: taskId, meeting_id: event.id, text: taskText, assignee: currentUser.email, status: 'pending', deleted: false, last_reminded_date: getTodayISO() });
+                            }
                         }
                     }
                     
+                    const timeMinDate = timeMin.toISOString().split('T')[0];
+                    const timeMaxDate = timeMax.toISOString().split('T')[0];
+                    
+                    // Identify events that exist in our database within this specific time frame but were no longer returned by Google
+                    const orphanedIds = meetingsRef.current
+                        .filter(m => m.date >= timeMinDate && m.date <= timeMaxDate && !fetchedIds.has(m.id))
+                        .map(m => m.id);
+
+                    deleteMeetingIds.push(...orphanedIds);
+
                     if (client) {
+                        if (deleteMeetingIds.length > 0) {
+                            const { error } = await client.from('meetings').delete().in('id', deleteMeetingIds);
+                            if (error) console.error("Sync Delete Error:", error);
+                        }
                         if (meetingBatch.length > 0) {
                             const { error } = await client.from('meetings').upsert(meetingBatch);
                             if (error) {
@@ -1797,7 +1836,7 @@ end $$;
                         }
                     }
 
-                    await fetchData(client, false, true); // skip reminders explicitly on manual sync
+                    await fetchData(client, false, true); 
                     setLastSynced(new Date().toLocaleTimeString());
                     lastGcalSyncRef.current = syncStartTime;
                     setGcalSyncStatus('live');
@@ -1908,10 +1947,7 @@ end $$;
                             const paraNode = flatNodes[i];
                             
                             const hasHorizontalRule = paraNode.elements?.some(e => e.horizontalRule);
-                            if (hasHorizontalRule) {
-                                console.log("Found horizontal divider, stopping extraction.");
-                                break;
-                            }
+                            if (hasHorizontalRule) break;
                             
                             let paraText = '';
                             let richElements = [];
@@ -1925,10 +1961,7 @@ end $$;
 
                             if (targetHeader) {
                                 const thisHeader = meetingHeaders.find(h => h.index === i);
-                                if (thisHeader && thisHeader.index !== targetHeader.index) {
-                                    console.log("Found another date header, stopping extraction.", thisHeader.dateStr);
-                                    break;
-                                }
+                                if (thisHeader && thisHeader.index !== targetHeader.index) break;
                             }
 
                             if (/^(attendees|participants|guests|cc|to):/i.test(rawText)) continue;
