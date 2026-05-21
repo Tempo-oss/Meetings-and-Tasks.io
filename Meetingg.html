@@ -1505,7 +1505,17 @@ end $$;
                 const todayStr = getTodayISO();
 
                 const tasksNeedingReminder = currentTasks.filter(t => {
-                    return !t.done && t.status !== 'completed' && !t.deleted && t.last_reminded_date !== todayStr;
+                    if (t.done || t.status === 'completed' || t.deleted) return false;
+                    
+                    if (!t.last_reminded_date) return true;
+
+                    // Calculate elapsed days since the last reminder safely (ignoring timezones)
+                    const todayObj = new Date(todayStr + 'T00:00:00');
+                    const lastRemindedObj = new Date(t.last_reminded_date + 'T00:00:00');
+                    const diffTime = todayObj.getTime() - lastRemindedObj.getTime();
+                    const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+                    
+                    return diffDays >= 2;
                 });
 
                 if (tasksNeedingReminder.length === 0) return;
@@ -1545,7 +1555,7 @@ end $$;
                 }
             };
 
-            const fetchData = async (sbClient = client, isBackground = false) => {
+            const fetchData = async (sbClient = client, isBackground = false, skipReminders = false) => {
                 if (!sbClient) return;
                 if (!isBackground) setDbStatus('connecting');
                 try {
@@ -1573,7 +1583,9 @@ end $$;
                     setColleagues(colleaguesList);
                     setMeetings(parsedM); setTasks(parsedT); setDbStatus(parsedM.length ? 'connected' : 'empty');
 
-                    checkAndSendReminders(parsedT, [...parsedTeam, ...colleaguesList, ...(currentUser ? [currentUser] : [])]);
+                    if (!skipReminders) {
+                        checkAndSendReminders(parsedT, [...parsedTeam, ...colleaguesList, ...(currentUser ? [currentUser] : [])]);
+                    }
                 } catch (err) {
                     if (err.code === 'TABLE_MISSING') setDbStatus('setup_required'); else { console.error("fetchData caught error:", err); setDbStatus('error'); setErrorMsg(err.message); }
                 }
@@ -1727,7 +1739,7 @@ end $$;
                     }
 
                     setMeetings([]); 
-                    await fetchData(client);
+                    await fetchData(client, false, true); // <--- Disable reminders on manual sync
                     setLastSynced(new Date().toLocaleTimeString());
                     lastGcalSyncRef.current = syncStartTime;
                     setGcalSyncStatus('live');
@@ -1936,7 +1948,7 @@ end $$;
                 if (!email.endsWith('@tempo.fit')) { showToast('Invalid email domain.'); return; }
                 try {
                     if (client) { const { error } = await client.from('team_members').insert({ email, name, team, role, system_role: systemRole }); if (error) throw error; }
-                    await fetchData(client); showToast(`Added ${name}.`);
+                    await fetchData(client, false, true); showToast(`Added ${name}.`);
                 } catch(e) { showToast("Error: " + e.message); }
             };
             
@@ -2025,7 +2037,7 @@ end $$;
                             if (error) {
                                 console.error(error);
                                 showToast("Failed to delete from database: " + error.message);
-                                fetchData(client); 
+                                fetchData(client, false, true); 
                             } else {
                                 showToast("All tasks deleted successfully.");
                             }
@@ -2039,7 +2051,7 @@ end $$;
             const handlePasswordLogin = async (email, password) => { if (!client) return; const { error } = await client.auth.signInWithPassword({ email, password }); if (error) showToast(error.message); };
             const handleSignUp = async (email, password) => { if (!client) return; const { error } = await client.auth.signUp({ email, password, options: { data: { full_name: email.split('@')[0] } } }); if (error) showToast(error.message); else showToast("Sign up successful! Please check your email."); };
             const handlePasswordReset = async (email) => { if (!client) return; const { error } = await client.auth.resetPasswordForEmail(email, { redirectTo: window.location.href }); if (error) showToast(error.message); else showToast("Password reset email sent!"); };
-            const handleUpdatePassword = async (newPassword) => { if (!client) return; const { error } = await client.auth.updateUser({ password: newPassword }); if (error) showToast(error.message); else { showToast("Password updated successfully!"); setView('dashboard'); fetchData(client); } };
+            const handleUpdatePassword = async (newPassword) => { if (!client) return; const { error } = await client.auth.updateUser({ password: newPassword }); if (error) showToast(error.message); else { showToast("Password updated successfully!"); setView('dashboard'); fetchData(client, false, true); } };
             
             const handleLogout = async () => { 
                 if (!client) return; 
